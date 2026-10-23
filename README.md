@@ -140,7 +140,7 @@ Every palette chip carries cell counts; four preset swatch sets (pastel, vivid, 
 - **Identical output:** the JS port is validated byte-for-byte against the numpy pipeline (SVG text, palettes, cell maps, PNG data) — see the fidelity numbers below.
 - **Exports download directly:** SVG / native PNG / upscaled preview / palette JSON+TXT, individually or zipped.
 
-The published site lives at **[https://iterativekey.github.io/gridsprite/](https://iterativekey.github.io/gridsprite/)**.
+The published site lives at **[https://iterativekey.github.io/GridSprite/](https://iterativekey.github.io/GridSprite/)**.
 
 To publish (one-time setup):
 

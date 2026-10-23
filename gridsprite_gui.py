@@ -205,7 +205,8 @@ HTML = r"""<!DOCTYPE html>
 <title>Gridsprite</title>
 <style>
   :root { --bg:#14151a; --panel:#1e2029; --panel2:#262836; --fg:#e8e6e3;
-          --muted:#9a9aa5; --accent:#7b6cf6; --border:#33364a; }
+          --muted:#9a9aa5; --accent:#7e8c54; --accent-soft:rgba(126,140,84,.14);
+          --border:#33364a; }
   * { box-sizing:border-box; }
   body { margin:0; font:14px/1.45 -apple-system,BlinkMacSystemFont,sans-serif;
          color:var(--fg); background:var(--bg); height:100vh;
@@ -221,7 +222,7 @@ HTML = r"""<!DOCTYPE html>
           border-radius:10px; text-align:center; color:var(--muted);
           font-size:13px; transition:all .15s; }
   #drop.over { border-color:var(--accent); color:var(--accent);
-               background:rgba(123,108,246,.08); }
+               background:var(--accent-soft); }
   #files { flex:1; overflow:auto; padding:4px 10px; }
   .fitem { display:flex; align-items:center; gap:8px; padding:6px;
            border-radius:8px; cursor:pointer; font-size:13px; }
@@ -336,7 +337,7 @@ HTML = r"""<!DOCTYPE html>
         <div class="palette" id="palette"></div>
         <div class="swrow" id="presets"></div>
         <div class="row">
-          <input type="color" id="custom" value="#7b6cf6">
+          <input type="color" id="custom" value="#7e8c54">
           <button id="applyCustom">Apply → affected</button>
         </div>
         <div id="tip"></div>
@@ -778,12 +779,23 @@ document.querySelectorAll('input[name="conn"]').forEach(r =>
   r.onchange = () => conn = Number(r.value));
 $("bgchk").onchange = () => { if (current) renderCanvas(); };
 const PRESETS = {
-  pastel:  ["#ffd6e0", "#ffe3b3", "#fff5b8", "#c9f2d7", "#c3e7fa",
-            "#dcc7f7", "#f7c7e9", "#c2ece6", "#fbdfc2", "#e7e9ee"],
-  vivid:   ["#ff5d8f", "#ff9f1c", "#ffd60a", "#7ae582", "#00b4d8",
-            "#5e60ce", "#9d4edd", "#ff6b35", "#00bbf9", "#e94f37"],
-  classic: ["#101418", "#2b2d42", "#7f8c8d", "#d3d6db", "#ffffff",
-            "#e0f8d0", "#306230", "#0f380f", "#d8a48f", "#3f266b"],
+  pastel:  [["red", "#ff9aa2"], ["orange", "#ffbd8a"], ["yellow", "#ffe08a"],
+            ["lime", "#d3efb4"], ["green", "#b6e2a1"], ["teal", "#a8dbd2"],
+            ["sky", "#a2d2ff"], ["indigo", "#c3b8ff"], ["pink", "#f8b7dd"],
+            ["mauve", "#d9b8c9"], ["khaki", "#c8bd99"], ["cloud", "#e7e9ee"]],
+  vivid:   [["red", "#e81224"], ["tangerine", "#ff6b35"], ["marigold", "#ffb703"],
+            ["yellow", "#ffd60a"], ["lime", "#65d413"], ["green", "#24c95c"],
+            ["teal", "#00b4d8"], ["azure", "#0096ff"], ["indigo", "#5e60ce"],
+            ["violet", "#9d4edd"], ["magenta", "#ff2fb9"], ["white", "#ffffff"]],
+  classic: [["red", "#ff0000"], ["orange", "#ff7f00"], ["yellow", "#ffff00"],
+            ["purple", "#800080"], ["blue", "#0000ff"], ["cyan", "#00ffff"],
+            ["green", "#008000"], ["magenta", "#ff00ff"], ["brown", "#8b4513"],
+            ["moss green", "#7e8c54"], ["gray", "#808080"], ["black", "#000000"],
+            ["white", "#ffffff"]],
+  nature:  [["moss green", "#7e8c54"], ["sage", "#aab88a"], ["fern", "#567d46"],
+            ["forest", "#2d4b2d"], ["pine", "#173a2b"], ["seagreen", "#2e8b57"],
+            ["olive", "#6b7023"], ["sand", "#d9c9a3"], ["terracotta", "#b86b4a"],
+            ["rust", "#93412f"], ["bark", "#5b4636"], ["stone", "#8a8f80"]],
 };
 (function renderPresets(){
   const box = $("presets");
@@ -791,9 +803,9 @@ const PRESETS = {
     const cap = document.createElement("div");
     cap.className = "swgroup"; cap.textContent = label;
     box.appendChild(cap);
-    cols.forEach(hex => {
+    cols.forEach(([name, hex]) => {
       const sw = document.createElement("div");
-      sw.className = "sw"; sw.style.background = hex; sw.title = `${label} ${hex}`;
+      sw.className = "sw"; sw.style.background = hex; sw.title = `${name} ${hex}`;
       sw.onclick = () => { $("custom").value = hex; applyCustomColor(); };
       box.appendChild(sw);
     });

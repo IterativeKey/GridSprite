@@ -31,6 +31,10 @@ from PIL import Image
 
 SEARCH_STEP = 0.05          # candidate cell sizes, px
 ALIGN_TOL = 0.25            # peak may sit at most 0.25*step from a grid line
+# Margin subtracted from the fit tolerance: knife-edge fits landing exactly
+# on (or an fp ulp above) the boundary behave identically across math
+# libraries (numpy vs JS Math), keeping the pure-JS port bit-compatible.
+FIT_MARGIN = 1e-6
 
 
 # ---------------------------------------------------------------- grid setup
@@ -82,7 +86,7 @@ def detect_grid_axis(profile, min_scale, max_scale):
         for dp in np.arange(-ALIGN_TOL * step, ALIGN_TOL * step, 0.25):
             p = (phase + dp) % step
             dev = peak_deviation(peaks, step, p)
-            if dev.max() <= ALIGN_TOL * step:
+            if dev.max() <= ALIGN_TOL * step - FIT_MARGIN:
                 return step, p, dev
         tried_ok = True
     if tried_ok:
@@ -144,7 +148,7 @@ def build_palette(cells, tol):
     flat = cells.reshape(-1, cells.shape[-1]).astype(np.float64)
     uniq, inv, counts = np.unique(flat, axis=0, return_inverse=True,
                                   return_counts=True)
-    order = np.argsort(-counts)
+    order = np.argsort(-counts, kind="stable")
     pal = []
     for idx in order:
         c = uniq[idx]

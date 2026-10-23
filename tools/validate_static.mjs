@@ -8,12 +8,12 @@ import { createRequire } from "module";
 import { readFileSync, readdirSync } from "fs";
 import { basename, join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { tmpdir } from "os";
 
 const require_ = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const GS = require_(join(here, "..", "docs", "pipeline.js"));
-const outdir = process.argv[2] ||
-  "/private/var/folders/7m/5flc5f_968l56dfcl0d218700000gn/T/opencode/validate";
+const outdir = process.argv[2] || join(tmpdir(), "gridsprite-validate");
 
 let failures = 0, checks = 0;
 

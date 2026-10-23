@@ -608,12 +608,16 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8643)
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="bind address; 0.0.0.0 exposes it to your network")
     args = ap.parse_args()
     ensure_out_dir()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Gridsprite API v{API_VERSION} on http://{args.host}:{args.port}"
           f" — POST /api/v1/process with raw image bytes", flush=True)
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"WARNING: listening on {args.host} — anyone on your network "
+              f"can use it", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

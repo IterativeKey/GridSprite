@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 
 import numpy as np
 from PIL import Image
@@ -84,8 +85,13 @@ def dump(path, outdir):
 
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else \
-        "/private/var/folders/7m/5flc5f_968l56dfcl0d218700000gn/T/opencode/validate"
+        os.path.join(tempfile.gettempdir(), "gridsprite-validate")
     os.makedirs(outdir, exist_ok=True)
+    # drop dumps of fixtures that no longer exist, so the JS side never
+    # compares against stale references
+    for f in glob.glob(os.path.join(outdir, "*.expected.json")) + \
+            glob.glob(os.path.join(outdir, "*.raw")):
+        os.remove(f)
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
     files = sorted(glob.glob(os.path.join(root, "sample_*.png")))

@@ -15,9 +15,10 @@ Features:
     + palette JSON/TXT)
 
 Usage:
-    python3 gridsprite_gui.py [--port 8642] [--outdir out]
+    python3 gridsprite_gui.py [--port 8642] [--outdir out] [--host 127.0.0.1]
 
 Opens http://127.0.0.1:PORT in your default browser. Ctrl+C to stop.
+Pass --host 0.0.0.0 to reach it from other devices on your network.
 """
 
 import argparse
@@ -38,6 +39,8 @@ import gridsprite as px
 
 SESSIONS = {}
 LOCK = threading.Lock()
+OUT_DIR = "out"                  # set from --outdir; never taken from requests
+MAX_BODY = 64 * 1024 * 1024      # 64 MB upload cap
 
 
 # ------------------------------------------------------------------ analysis
@@ -98,7 +101,7 @@ def export(data):
     if despeckle > 1:
         removed, _ = px.despeckle(mapping, despeckle,
                                   skip_idx=(transparent,) if transparent is not None else ())
-    outdir = data.get("outdir", "out")
+    outdir = OUT_DIR
     os.makedirs(outdir, exist_ok=True)
     base = os.path.splitext(os.path.basename(sess["name"]))[0]
     base = re.sub(r"[^A-Za-z0-9_.-]", "_", base)
@@ -161,6 +164,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_body(self):
         n = int(self.headers.get("Content-Length", 0))
+        if n > MAX_BODY:
+            raise ValueError(f"body too large ({n} bytes; max {MAX_BODY})")
         return self.rfile.read(n)
 
     # -- routes -------------------------------------------------------------
@@ -179,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
             path = q.get("f", "")
             if os.path.dirname(path) or path.startswith("."):
                 return self.send_json({"error": "bad path"}, 400)
-            self.send_file_bytes(os.path.join("out", path))
+            self.send_file_bytes(os.path.join(OUT_DIR, path))
         else:
             self.send_json({"error": "not found"}, 404)
 
@@ -1431,13 +1436,20 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8642)
     ap.add_argument("--outdir", default="out")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="bind address; 0.0.0.0 exposes it to your network")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
+    global OUT_DIR
+    OUT_DIR = args.outdir
     url = f"http://127.0.0.1:{args.port}"
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Gridsprite GUI running at {url}  (Ctrl+C to stop)")
-    print("Outputs are written to ./out/ as in the CLI.")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"WARNING: listening on {args.host}:{args.port} — anyone on your "
+              f"network can use it and write exports to {OUT_DIR}/")
+    print(f"Outputs are written to {OUT_DIR}/")
     if not args.no_browser:
         try:
             subprocess.Popen(["open", url])

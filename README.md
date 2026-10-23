@@ -1,7 +1,7 @@
 # Gridsprite
 
 <p align="center">
-  <img src="assets/hero.png" alt="Gridsprite — upscaled pixel art in, recovered grid + recolorable SVG out" width="800"/>
+  <img src="sample_5.png" alt="Gridsprite logo" width="256"/>
 </p>
 
 <p align="center">

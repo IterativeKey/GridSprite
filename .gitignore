@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# generated outputs
+out/
+
+# OS / editor noise
+.DS_Store
+*.swp
+
+# do NOT ignore sample_*.png — they are the test fixtures

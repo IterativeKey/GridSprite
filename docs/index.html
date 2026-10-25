@@ -144,6 +144,13 @@ main {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
 }
 .card-title .count { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--faint); }
+.linkbtn {
+  border: none; background: none; padding: 0;
+  font-size: 11px; font-weight: 550; letter-spacing: 0; text-transform: none;
+  color: var(--accent); cursor: pointer;
+}
+.linkbtn:hover { text-decoration: underline; }
+.card:has(.filelist:empty) .linkbtn, .card:has(.exports:empty) .linkbtn { display: none; }
 
 /* -------------------------------------------------------------- sidebar */
 #drop {
@@ -204,10 +211,13 @@ main {
 .canvas-scroll {
   flex: 1; min-height: 0;
   overflow: auto;
-  display: grid; place-items: center;
+  display: grid;
   border-radius: 10px;
 }
+/* auto margins center the canvas but drop to 0 once it overflows, so every
+   edge of a zoomed canvas stays reachable by scrolling */
 #canvaswrap {
+  margin: auto;
   position: relative; flex: none;
   border: 1px solid var(--border-strong);
   border-radius: 6px;
@@ -217,6 +227,14 @@ main {
 }
 canvas { display: block; image-rendering: pixelated; touch-action: none; }
 #overlay, #gridlines { position: absolute; inset: 0; pointer-events: none; }
+.canvas-scroll.pan-ready canvas { cursor: grab !important; }
+.canvas-scroll.panning, .canvas-scroll.panning canvas { cursor: grabbing !important; }
+.zoombar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.zoombar output {
+  min-width: 40px; text-align: center;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.btn.sm { padding: 3px 10px; font-size: 12.5px; border-radius: 7px; }
 .tipbar {
   margin-top: 10px; padding: 8px 12px;
   border-radius: 9px;
@@ -251,7 +269,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
 .tools .card:last-child { margin-bottom: 0; }
 
 .segmented {
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 11px;
@@ -423,6 +441,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
   main { grid-template-columns: 240px minmax(0, 1fr); }
   .tools { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: start; }
   .tools .card + .card { margin-top: 0; }
+  .canvas-scroll { max-height: 62vh; }
 }
 @media (max-width: 780px) {
   body { font-size: 13.5px; }
@@ -464,7 +483,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
 <main>
   <aside class="sidebar">
     <section class="card">
-      <h2 class="card-title">Files</h2>
+      <h2 class="card-title">Files <button class="linkbtn" id="clearFiles" type="button">Clear</button></h2>
       <button id="drop" type="button">Drop images here<span>or click to browse</span></button>
       <input type="file" id="fileinput" multiple accept="image/*" hidden>
       <div id="files" class="filelist"></div>
@@ -476,6 +495,12 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="stagebar">
         <div id="stats" class="stats"></div>
         <div class="spacer"></div>
+        <div class="zoombar">
+          <button class="btn sm" id="zoomOut" type="button" title="Zoom out (−)" aria-label="Zoom out">−</button>
+          <output id="zoomLabel">Fit</output>
+          <button class="btn sm" id="zoomIn" type="button" title="Zoom in (+)" aria-label="Zoom in">+</button>
+          <button class="btn sm" id="zoomFit" type="button" title="Fit to view (0)">Fit</button>
+        </div>
       </div>
       <div class="canvas-scroll" id="canvasScroll">
         <div id="canvaswrap">
@@ -506,6 +531,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="segmented" id="modes">
         <button class="seg on" data-mode="global" type="button" aria-pressed="true">Global</button>
         <button class="seg" data-mode="region" type="button" aria-pressed="false">Region</button>
+        <button class="seg" data-mode="select" type="button" aria-pressed="false" title="Rectangle select (M)">Select</button>
         <button class="seg" data-mode="brush" type="button" aria-pressed="false" title="Brush (B)">Brush</button>
         <button class="seg" data-mode="fill" type="button" aria-pressed="false" title="Fill (F)">Fill</button>
         <button class="seg" data-mode="erase" type="button" aria-pressed="false" title="Erase (E)">Erase</button>
@@ -556,7 +582,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
     </section>
 
     <section class="card">
-      <h2 class="card-title">Export</h2>
+      <h2 class="card-title">Export <button class="linkbtn" id="clearExports" type="button">Clear</button></h2>
       <p class="muted-note">Downloads SVG, native PNG, upscaled PNG and palette files — individually or as a single ZIP. Nothing leaves your browser.</p>
       <div class="row">
         <button class="btn primary" id="exportBtn" type="button">Export this file</button>

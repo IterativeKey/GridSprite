@@ -11,20 +11,27 @@ let brushColor = null;            // palette index used by brush and fill
 let undoStack = [];
 let dragging = false;
 let lastPaint = null;             // last cell a brush or erase drag painted
+let marquee = null;               // {y0, x0, base} while dragging a rectangle selection
+let pan = null;                   // pointer and scroll origin while panning
+let spaceHeld = false;
+let pointerFocus = false;         // focus last moved by pointer, not by Tab
 
 const $ = id => document.getElementById(id);
 const c = $("c"), ctx = c.getContext("2d", {willReadFrequently:false});
 const o = $("overlay"), octx = o.getContext("2d");
 const g = $("gridlines"), gctx = g.getContext("2d");
 const canvasScroll = $("canvasScroll");
-let view = {scale: 8};
+const ZOOMS = [1, 1.5, 2, 3, 4, 6, 8];   // multiples of the fit-to-view scale
+const MAX_CANVAS_AREA = 16e6;            // px; Safari refuses larger canvases
+let view = {scale: 8, zoom: 0};          // zoom indexes ZOOMS
 let hoverPos = null;              // [y, x] under cursor (brush shimmer)
 let shimmerRAF = 0;
 let fillPreview = null;           // {key, cells} region under the cursor in fill mode
 
 const modeTips = {
-  global: "<b>Global</b> — click a palette color to shimmer-preview every cell it would change, then click another color, a preset or <b>Apply to affected</b> to recolor the group.",
-  region: "<b>Region</b> — click a cluster of same-colored cells (4- or 8-connected) to shimmer-select it, then click a color or preset to recolor it.",
+  global: "<b>Global</b> — click a palette color to shimmer-preview every cell it would change, then click another color, a preset or <b>Apply to affected</b> to recolor the group. Drag the canvas to pan.",
+  region: "<b>Region</b> — click a cluster of same-colored cells (4- or 8-connected) to shimmer-select it, then click a color or preset to recolor it. Delete clears it.",
+  select: "<b>Select</b> — drag a rectangle of cells (Shift adds to the selection), then click a color, a preset or <b>Apply to affected</b> to fill it. Delete clears it, Esc deselects.",
   brush:  "<b>Brush</b> — pick a color (palette chip, preset row or the picker), then drag on the canvas to paint. The cell under the pointer shimmers. Alt-click picks a color from the canvas.",
   fill:   "<b>Fill</b> — pick a color, then click a cluster of same-colored or transparent cells (4- or 8-connected) to fill it. The shimmer shows what would change. Alt-click picks a color.",
   erase:  "<b>Erase</b> — drag on the canvas to make cells transparent.",
@@ -131,7 +138,7 @@ function openSession(sid){
   const s = sessions[sid];
   if (!s) return;
   current = sid;
-  selection.clear(); selColor = -1; undoStack = [];
+  selection.clear(); selColor = -1; undoStack = []; view.zoom = 0;
   document.querySelectorAll(".fitem").forEach(f =>
     f.classList.toggle("sel", f.dataset.sid === sid));
   $("empty").style.display = "none";
@@ -208,10 +215,20 @@ function fitScale(s){
     Math.floor(Math.min(availW / s.ncols, availH / s.nrows))));
 }
 
+// cell size in px at the current zoom, capped to the largest safe canvas
+function viewScale(s){
+  const cap = Math.floor(Math.sqrt(MAX_CANVAS_AREA / (s.ncols * s.nrows)));
+  return Math.max(1, Math.min(cap, Math.round(fitScale(s) * ZOOMS[view.zoom])));
+}
+
 function renderCanvas(){
   const s = sessions[current];
-  const scale = fitScale(s);
+  const scale = viewScale(s);
   view.scale = scale;
+  $("zoomLabel").textContent = view.zoom ? ZOOMS[view.zoom] + "×" : "Fit";
+  $("zoomOut").disabled = $("zoomFit").disabled = !view.zoom;
+  $("zoomIn").disabled = view.zoom === ZOOMS.length - 1 ||
+    scale < Math.round(fitScale(s) * ZOOMS[view.zoom]);
   c.width = s.ncols * scale; c.height = s.nrows * scale;
   o.width = c.width; o.height = c.height;
   ctx.clearRect(0, 0, c.width, c.height);
@@ -262,7 +279,7 @@ function affectedCells(){
   if (!current) return null;
   const s = sessions[current];
   const out = new Set();
-  if (mode === "region" && selection.size){
+  if (hasSelection()){
     selection.forEach(k => out.add(k));
   } else if (mode === "global" && selColor >= 0){
     for (let y = 0; y < s.nrows; y++)
@@ -371,7 +388,7 @@ function paletteClick(i){
       toast(`Recolored all ${s.palette[from]} cells → ${s.palette[i]}`);
       selColor = -1;
     }
-  } else if (mode === "region" && selection.size){
+  } else if (hasSelection()){
     snapshot();
     const to = i;
     selection.forEach(key => {
@@ -400,7 +417,7 @@ function applyCustomColor(){
   if (!current) { toast("Open a file first"); return; }
   const s = sessions[current];
   const hex = $("custom").value;
-  if (mode === "region" && selection.size){
+  if (hasSelection()){
     snapshot();
     const idx = ensureColor(hex);
     selection.forEach(key => {
@@ -426,6 +443,36 @@ function applyCustomColor(){
     selColor = -1;
   }
   renderCanvas(); renderPalette();
+}
+
+function hasSelection(){
+  return (mode === "region" || mode === "select") && selection.size > 0;
+}
+
+function eraseSelection(){
+  const s = sessions[current];
+  snapshot();
+  selection.forEach(key => {
+    const [y, x] = key.split(",").map(Number);
+    s.mapping[y][x] = CLEAR_CELL;
+  });
+  s.edited = true;
+  refreshFileStatus(current);
+  selection.clear(); selColor = -1;
+  $("tipbar").textContent = "";
+  renderCanvas(); renderPalette();
+}
+
+// selects the cell rectangle between the drag start and (y1, x1)
+function updateMarquee(y1, x1){
+  const {y0, x0, base} = marquee;
+  selection = new Set(base);
+  for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++)
+    for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++)
+      selection.add(y + "," + x);
+  const w = Math.abs(x1 - x0) + 1, h = Math.abs(y1 - y0) + 1;
+  $("tipbar").textContent = `Selected ${selection.size} cells (${w}×${h} rectangle) — click a palette color, a preset or Apply to fill them; Delete clears them, Esc deselects.`;
+  updateShimmer();
 }
 
 function selectRegion(y, x){
@@ -484,20 +531,84 @@ function fillAt(y, x){
 
 /* ------------------------------------------------------- canvas pointers */
 
-function canvasPos(ev){
+// cell under the pointer; off-canvas gives null, or the nearest edge cell
+// when clamp is set
+function canvasPos(ev, clamp){
   const r = c.getBoundingClientRect();
   const s = sessions[current];
-  const x = Math.floor((ev.clientX - r.left) / view.scale);
-  const y = Math.floor((ev.clientY - r.top) / view.scale);
+  let x = Math.floor((ev.clientX - r.left) / view.scale);
+  let y = Math.floor((ev.clientY - r.top) / view.scale);
+  if (clamp){
+    x = Math.max(0, Math.min(s.ncols - 1, x));
+    y = Math.max(0, Math.min(s.nrows - 1, y));
+  }
   if (x < 0 || y < 0 || x >= s.ncols || y >= s.nrows) return null;
   return [y, x];
 }
+
+/* ----------------------------------------------------------- zoom & pan */
+
+// steps through ZOOMS, keeping the canvas point under anchor (client
+// coordinates, the view center by default) in place
+function setZoom(z, anchor){
+  if (!current) return;
+  z = Math.max(0, Math.min(ZOOMS.length - 1, z));
+  if (z === view.zoom) return;
+  const box = canvasScroll.getBoundingClientRect();
+  const [ax, ay] = anchor || [box.left + box.width / 2, box.top + box.height / 2];
+  const r0 = c.getBoundingClientRect();
+  const u = (ax - r0.left) / view.scale, v = (ay - r0.top) / view.scale;
+  view.zoom = z;
+  renderCanvas();
+  const r1 = c.getBoundingClientRect();
+  canvasScroll.scrollLeft += r1.left + u * view.scale - ax;
+  canvasScroll.scrollTop += r1.top + v * view.scale - ay;
+}
+
+$("zoomIn").onclick = () => setZoom(view.zoom + 1);
+$("zoomOut").onclick = () => setZoom(view.zoom - 1);
+$("zoomFit").onclick = () => setZoom(0);
+
+// ctrl/cmd + wheel (and trackpad pinch) zooms at the pointer
+let wheelAcc = 0;
+canvasScroll.addEventListener("wheel", ev => {
+  if (!current || !(ev.ctrlKey || ev.metaKey)) return;
+  ev.preventDefault();
+  wheelAcc += ev.deltaY;
+  if (Math.abs(wheelAcc) < 50) return;
+  setZoom(view.zoom + (wheelAcc < 0 ? 1 : -1), [ev.clientX, ev.clientY]);
+  wheelAcc = 0;
+}, {passive: false});
+
+// middle-drag, space-drag or (in Global mode, where clicks do nothing) a
+// plain drag pans; the capture listener runs before the canvas tools
+canvasScroll.addEventListener("pointerdown", ev => {
+  if (!current) return;
+  if (!(ev.button === 1 || (ev.button === 0 && (spaceHeld || mode === "global")))) return;
+  pan = {x: ev.clientX, y: ev.clientY,
+         left: canvasScroll.scrollLeft, top: canvasScroll.scrollTop};
+  canvasScroll.setPointerCapture(ev.pointerId);
+  canvasScroll.classList.add("panning");
+  ev.preventDefault(); ev.stopPropagation();
+}, true);
+canvasScroll.addEventListener("pointermove", ev => {
+  if (!pan) return;
+  canvasScroll.scrollLeft = pan.left - (ev.clientX - pan.x);
+  canvasScroll.scrollTop = pan.top - (ev.clientY - pan.y);
+});
+const endPan = () => { pan = null; canvasScroll.classList.remove("panning"); };
+canvasScroll.addEventListener("pointerup", endPan);
+canvasScroll.addEventListener("pointercancel", endPan);
 
 c.addEventListener("pointerdown", ev => {
   if (!current || ev.button > 0) return;
   const pos = canvasPos(ev); if (!pos) return;
   const [y, x] = pos;
-  if (mode === "region"){
+  if (mode === "select"){
+    marquee = {y0: y, x0: x, base: ev.shiftKey ? new Set(selection) : new Set()};
+    c.setPointerCapture(ev.pointerId);
+    updateMarquee(y, x);
+  } else if (mode === "region"){
     selectRegion(y, x);
     renderCanvas();
     const s = sessions[current];
@@ -517,6 +628,11 @@ c.addEventListener("pointerdown", ev => {
 });
 
 c.addEventListener("pointermove", ev => {
+  if (marquee){
+    const [y, x] = canvasPos(ev, true);
+    updateMarquee(y, x);
+    return;
+  }
   if (dragging && (mode === "brush" || mode === "erase")){
     const pos = canvasPos(ev); if (pos) paintLine(lastPaint || pos, pos);
     lastPaint = pos;
@@ -527,10 +643,10 @@ c.addEventListener("pointermove", ev => {
 });
 
 c.addEventListener("pointerleave", () => { hoverPos = null; });
-c.addEventListener("pointercancel", () => { dragging = false; });
+c.addEventListener("pointercancel", () => { dragging = false; marquee = null; });
 window.addEventListener("pointerup", () => {
   if (dragging && current){ refreshFileStatus(current); renderPalette(); }
-  dragging = false;
+  dragging = false; marquee = null;
 });
 
 // paints every cell on the line between two cells, so fast drags leave no gaps
@@ -566,6 +682,12 @@ function bytesToBlob(f){
     : new Blob([f.text], { type: f.type + ";charset=utf-8" });
 }
 
+function clearExports(){
+  $("exports").querySelectorAll("a").forEach(a => URL.revokeObjectURL(a.href));
+  $("exports").innerHTML = "";
+}
+$("clearExports").onclick = clearExports;
+
 async function exportSession(sid){
   const s = sessions[sid];
   const art = GridSprite.exportArtifacts(s, Number($("desp").value));
@@ -583,6 +705,7 @@ $("exportBtn").onclick = async () => {
   const s = sessions[current];
   try {
     const d = await exportSession(current);
+    clearExports();
     addExportLinks(d, s.name);
     setFileStatus(current, "ok", sessionDims(s) + " · exported");
     toast(`Exported (${d.stats.rects} rects, ${d.stats.regions} regions` +
@@ -595,6 +718,7 @@ $("exportAll").onclick = async () => {
   const ids = Object.keys(sessions);
   if (!ids.length) { toast("Nothing to export yet — drop an image first"); return; }
   $("exportAll").disabled = true;
+  clearExports();
   for (const sid of ids){
     try {
       const d = await exportSession(sid);
@@ -615,8 +739,7 @@ function addExportLinks(d, spriteName){
     const nm = document.createElement("div");
     nm.className = "exp-name"; nm.textContent = base;
     box.appendChild(nm);
-    $("exports").prepend(box);
-    while ($("exports").children.length > 8) $("exports").lastChild.remove();
+    $("exports").appendChild(box);
   }
   [...box.querySelectorAll("a")].forEach(a => { a.remove(); URL.revokeObjectURL(a.href); });
   for (const l of d.links){
@@ -647,7 +770,8 @@ function setMode(next){
   $("connrow").hidden = mode !== "region" && mode !== "fill";
   $("tip").innerHTML = modeTips[mode];
   selection.clear(); selColor = -1;
-  c.style.cursor = mode === "global" ? "default" :
+  $("tipbar").textContent = "";
+  c.style.cursor = mode === "global" ? "grab" :
                    mode === "region" || mode === "fill" ? "pointer" : "crosshair";
   if (current) { renderCanvas(); renderPalette(); }
 }
@@ -708,15 +832,55 @@ const PRESETS = {
 
 $("applyCustom").onclick = applyCustomColor;
 $("undo").onclick = undo;
-const MODE_KEYS = {b: "brush", f: "fill", e: "erase", i: "pick"};
+const MODE_KEYS = {b: "brush", f: "fill", e: "erase", i: "pick", m: "select"};
+const ZOOM_KEYS = {"+": 1, "=": 1, "-": -1, "_": -1};
 window.addEventListener("keydown", e => {
   if ((e.metaKey || e.ctrlKey) && e.key === "z"){
     e.preventDefault(); undo();
-  } else if (!e.metaKey && !e.ctrlKey && !e.altKey && MODE_KEYS[e.key.toLowerCase()] &&
-             !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)){
+    return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey ||
+      e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+  if (e.key === "Tab") pointerFocus = false;
+  // Space pans unless a button focused with Tab should take the press
+  if (e.key === " " && current &&
+      !(e.target instanceof HTMLButtonElement && !pointerFocus)){
+    e.preventDefault();
+    spaceHeld = true; canvasScroll.classList.add("pan-ready");
+  } else if (ZOOM_KEYS[e.key]){
+    setZoom(view.zoom + ZOOM_KEYS[e.key]);
+  } else if (e.key === "0"){
+    setZoom(0);
+  } else if ((e.key === "Delete" || e.key === "Backspace") && current && hasSelection()){
+    e.preventDefault(); eraseSelection();
+  } else if (e.key === "Escape" && selection.size){
+    selection.clear(); selColor = -1; $("tipbar").textContent = "";
+    if (current) renderPalette();
+  } else if (MODE_KEYS[e.key.toLowerCase()]){
     setMode(MODE_KEYS[e.key.toLowerCase()]);
   }
 });
+window.addEventListener("pointerdown", () => { pointerFocus = true; }, true);
+window.addEventListener("keyup", e => {
+  if (e.key === " " && spaceHeld){
+    e.preventDefault();
+    spaceHeld = false; canvasScroll.classList.remove("pan-ready");
+  }
+});
+window.addEventListener("blur", () => {
+  spaceHeld = false; canvasScroll.classList.remove("pan-ready");
+});
+
+$("clearFiles").onclick = () => {
+  for (const sid in sessions) delete sessions[sid];
+  current = null; selection.clear(); selColor = -1; undoStack = [];
+  hoverPos = null; marquee = null; dragging = false;
+  $("files").innerHTML = "";
+  $("palette").innerHTML = ""; $("pcount").textContent = "";
+  $("tipbar").textContent = "";
+  $("editor").hidden = true; $("empty").style.display = "";
+  updateUndoBtn();
+};
 
 /* ---------------------------------------------------------------- drop */
 $("drop").onclick = () => $("fileinput").click();
@@ -773,7 +937,7 @@ const queueRerender = () => {
   if (!current) return;
   cancelAnimationFrame(resizeRAF);
   resizeRAF = requestAnimationFrame(() => {
-    const scale = fitScale(sessions[current]);
+    const scale = viewScale(sessions[current]);
     if (scale !== view.scale) renderCanvas(); // avoids resize feedback loops
   });
 };

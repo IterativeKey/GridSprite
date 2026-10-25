@@ -88,6 +88,8 @@ async function analyzeFile(file){
   sessions[sid] = d;
   d.edited = false;
   d.transparentOn = d.transparent !== null && d.transparent !== undefined;
+  d.added = Date.now();             // keeps the file list order on restore
+  saveSession(sid);
   return sid;
 }
 
@@ -138,6 +140,7 @@ function openSession(sid){
   const s = sessions[sid];
   if (!s) return;
   current = sid;
+  try { localStorage.setItem("gs-current", sid); } catch (e) {}
   selection.clear(); selColor = -1; undoStack = []; view.zoom = 0;
   document.querySelectorAll(".fitem").forEach(f =>
     f.classList.toggle("sel", f.dataset.sid === sid));
@@ -153,10 +156,16 @@ function openSession(sid){
 }
 
 function sessionDims(s){ return `${s.ncols}×${s.nrows}`; }
-function refreshFileStatus(sid){
+function showFileStatus(sid){
   const s = sessions[sid];
-  if (s) setFileStatus(sid, "ok",
+  setFileStatus(sid, "ok",
     s.edited ? `${sessionDims(s)} · edited` : sessionDims(s));
+}
+// call after every change to a session: refreshes its row and saves it
+function sessionChanged(sid){
+  if (!sessions[sid]) return;
+  showFileStatus(sid);
+  saveSession(sid);
 }
 
 function updateStats(){
@@ -369,7 +378,7 @@ function undo(){
   const st = undoStack.pop();
   sessions[current] = {...s, mapping: st.mapping, palette: st.palette, edited: true};
   selection.clear(); selColor = -1;
-  refreshFileStatus(current);
+  sessionChanged(current);
   renderCanvas(); renderPalette(); updateUndoBtn();
 }
 
@@ -384,7 +393,7 @@ function paletteClick(i){
       const from = selColor;
       s.mapping = s.mapping.map(row => row.map(v => v === from ? i : v));
       s.edited = true;
-      refreshFileStatus(current);
+      sessionChanged(current);
       toast(`Recolored all ${s.palette[from]} cells → ${s.palette[i]}`);
       selColor = -1;
     }
@@ -396,7 +405,7 @@ function paletteClick(i){
       s.mapping[y][x] = to;
     });
     s.edited = true;
-    refreshFileStatus(current);
+    sessionChanged(current);
     selection.clear(); selColor = -1;
   } else {
     brushColor = i; selColor = -1;
@@ -425,7 +434,7 @@ function applyCustomColor(){
       s.mapping[y][x] = idx;
     });
     s.edited = true;
-    refreshFileStatus(current);
+    sessionChanged(current);
     toast(`Region recolored → ${hex}`);
     selection.clear(); selColor = -1;
   } else if (mode === "brush" || mode === "fill" || mode === "erase" || mode === "pick"){
@@ -438,7 +447,7 @@ function applyCustomColor(){
     snapshot();
     s.palette[selColor] = hex;
     s.edited = true;
-    refreshFileStatus(current);
+    sessionChanged(current);
     toast(`Palette entry → ${hex}`);
     selColor = -1;
   }
@@ -457,7 +466,7 @@ function eraseSelection(){
     s.mapping[y][x] = CLEAR_CELL;
   });
   s.edited = true;
-  refreshFileStatus(current);
+  sessionChanged(current);
   selection.clear(); selColor = -1;
   $("tipbar").textContent = "";
   renderCanvas(); renderPalette();
@@ -525,7 +534,7 @@ function fillAt(y, x){
     s.mapping[cy][cx] = brushColor;
   });
   s.edited = true;
-  refreshFileStatus(current);
+  sessionChanged(current);
   renderCanvas(); renderPalette();
 }
 
@@ -645,7 +654,7 @@ c.addEventListener("pointermove", ev => {
 c.addEventListener("pointerleave", () => { hoverPos = null; });
 c.addEventListener("pointercancel", () => { dragging = false; marquee = null; });
 window.addEventListener("pointerup", () => {
-  if (dragging && current){ refreshFileStatus(current); renderPalette(); }
+  if (dragging && current){ sessionChanged(current); renderPalette(); }
   dragging = false; marquee = null;
 });
 
@@ -792,6 +801,7 @@ $("gridchk").onchange = () => {
 $("bgchk").onchange = () => {
   if (!current) return;
   sessions[current].transparentOn = $("bgchk").checked;
+  saveSession(current);
   renderCanvas();
 };
 
@@ -873,6 +883,7 @@ window.addEventListener("blur", () => {
 
 $("clearFiles").onclick = () => {
   for (const sid in sessions) delete sessions[sid];
+  clearSaved();
   current = null; selection.clear(); selColor = -1; undoStack = [];
   hoverPos = null; marquee = null; dragging = false;
   $("files").innerHTML = "";
@@ -881,6 +892,72 @@ $("clearFiles").onclick = () => {
   $("editor").hidden = true; $("empty").style.display = "";
   updateUndoBtn();
 };
+
+/* ------------------------------------------------------------ persistence */
+/* sessions live in IndexedDB so a refresh keeps the work; undo history does
+   not survive. Each edit saves at once (a brush drag saves on release), since
+   a write started while the page unloads can be dropped. Without storage
+   (private window, blocked site data) the app works as before, unsaved. */
+let dbPromise = null;
+let saveWarned = false;
+
+function openDb(){
+  if (!dbPromise) dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open("gridsprite", 1);
+    req.onupgradeneeded = () => req.result.createObjectStore("sessions", {keyPath: "sid"});
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+// runs fn(store) in one transaction; resolves with the last request's result
+async function withStore(access, fn){
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("sessions", access);
+    const req = fn(tx.objectStore("sessions"));
+    tx.oncomplete = () => resolve(req && req.result);
+    tx.onerror = tx.onabort = () => reject(tx.error);
+    if (tx.commit) tx.commit();     // don't wait for the task to end
+  });
+}
+
+function saveFailed(e){
+  if (saveWarned) return;
+  saveWarned = true;
+  toast("Progress can't be saved in this browser: " + (e && e.message || e), 5000);
+}
+
+function saveSession(sid){
+  const s = sessions[sid];
+  if (!s) return;
+  const { bgMask, ...data } = s;   // bgMask is derived at render time
+  withStore("readwrite", st => st.put({...data, sid})).catch(saveFailed);
+}
+
+function clearSaved(){
+  try { localStorage.removeItem("gs-current"); } catch (e) {}
+  withStore("readwrite", st => st.clear()).catch(saveFailed);
+}
+
+async function restoreSessions(){
+  let saved;
+  try {
+    saved = await withStore("readonly", st => st.getAll());
+  } catch (e) { return; }
+  saved.sort((a, b) => (a.added || 0) - (b.added || 0));
+  for (const {sid, ...s} of saved){
+    sessions[sid] = s;
+    addFileRow({...s, sid});
+    showFileStatus(sid);
+  }
+  let last = null;
+  try { last = localStorage.getItem("gs-current"); } catch (e) {}
+  const open = sessions[last] ? last : saved.length ? saved[saved.length - 1].sid : null;
+  if (open) openSession(open);
+}
+restoreSessions();
 
 /* ---------------------------------------------------------------- drop */
 $("drop").onclick = () => $("fileinput").click();

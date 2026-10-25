@@ -527,6 +527,16 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
 
   <aside class="tools" id="toolsPanel">
     <section class="card">
+      <h2 class="card-title">Export <button class="linkbtn" id="clearExports" type="button">Clear</button></h2>
+      <p class="muted-note">Downloads SVG, native PNG, upscaled PNG and palette files — individually or as a single ZIP. Nothing leaves your browser.</p>
+      <div class="row">
+        <button class="btn primary" id="exportBtn" type="button">Export this file</button>
+        <button class="btn" id="exportAll" type="button">Export all</button>
+      </div>
+      <div class="exports" id="exports"></div>
+    </section>
+
+    <section class="card">
       <h2 class="card-title">Edit mode</h2>
       <div class="segmented" id="modes">
         <button class="seg on" data-mode="global" type="button" aria-pressed="true">Global</button>
@@ -551,6 +561,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="row">
         <input type="color" class="colorwell" id="custom" value="#7e8c54" aria-label="Custom color">
         <button class="btn" id="applyCustom" type="button">Apply to affected</button>
+        <button class="btn" id="clearSel" type="button" title="Make the selected cells transparent (Delete)">Make transparent</button>
       </div>
     </section>
 
@@ -579,16 +590,6 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="row">
         <button class="btn" id="undo" type="button">Undo <kbd>⌘Z</kbd></button>
       </div>
-    </section>
-
-    <section class="card">
-      <h2 class="card-title">Export <button class="linkbtn" id="clearExports" type="button">Clear</button></h2>
-      <p class="muted-note">Downloads SVG, native PNG, upscaled PNG and palette files — individually or as a single ZIP. Nothing leaves your browser.</p>
-      <div class="row">
-        <button class="btn primary" id="exportBtn" type="button">Export this file</button>
-        <button class="btn" id="exportAll" type="button">Export all</button>
-      </div>
-      <div class="exports" id="exports"></div>
     </section>
   </aside>
 </main>

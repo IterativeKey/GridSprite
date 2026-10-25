@@ -30,8 +30,8 @@ let fillPreview = null;           // {key, cells} region under the cursor in fil
 
 const modeTips = {
   global: "<b>Global</b> — click a palette color to shimmer-preview every cell it would change, then click another color, a preset or <b>Apply to affected</b> to recolor the group. Drag the canvas to pan.",
-  region: "<b>Region</b> — click a cluster of same-colored cells (4- or 8-connected) to shimmer-select it, then click a color or preset to recolor it. Delete clears it.",
-  select: "<b>Select</b> — drag a rectangle of cells (Shift adds to the selection), then click a color, a preset or <b>Apply to affected</b> to fill it. Delete clears it, Esc deselects.",
+  region: "<b>Region</b> — click a cluster of same-colored cells (4- or 8-connected) to shimmer-select it, then click a color or preset to recolor it. <b>Make transparent</b> or Delete clears it.",
+  select: "<b>Select</b> — drag a rectangle of cells (Shift adds to the selection), then click a color, a preset or <b>Apply to affected</b> to fill it. <b>Make transparent</b> or Delete clears it, Esc deselects.",
   brush:  "<b>Brush</b> — pick a color (palette chip, preset row or the picker), then drag on the canvas to paint. The cell under the pointer shimmers. Alt-click picks a color from the canvas.",
   fill:   "<b>Fill</b> — pick a color, then click a cluster of same-colored or transparent cells (4- or 8-connected) to fill it. The shimmer shows what would change. Alt-click picks a color.",
   erase:  "<b>Erase</b> — drag on the canvas to make cells transparent.",
@@ -480,7 +480,7 @@ function updateMarquee(y1, x1){
     for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++)
       selection.add(y + "," + x);
   const w = Math.abs(x1 - x0) + 1, h = Math.abs(y1 - y0) + 1;
-  $("tipbar").textContent = `Selected ${selection.size} cells (${w}×${h} rectangle) — click a palette color, a preset or Apply to fill them; Delete clears them, Esc deselects.`;
+  $("tipbar").textContent = `Selected ${selection.size} cells (${w}×${h} rectangle) — click a palette color, a preset or Apply to fill them; Make transparent or Delete clears them, Esc deselects.`;
   updateShimmer();
 }
 
@@ -841,6 +841,11 @@ const PRESETS = {
 })();
 
 $("applyCustom").onclick = applyCustomColor;
+$("clearSel").onclick = () => {
+  if (!current) { toast("Open a file first"); return; }
+  if (!hasSelection()){ toast("Select cells first (Region or Select mode)"); return; }
+  eraseSelection();
+};
 $("undo").onclick = undo;
 const MODE_KEYS = {b: "brush", f: "fill", e: "erase", i: "pick", m: "select"};
 const ZOOM_KEYS = {"+": 1, "=": 1, "-": -1, "_": -1};

@@ -31,12 +31,12 @@ python3 -m venv .venv && .venv/bin/pip install numpy pillow
 | Tool | Command |
 |---|---|
 | CLI | `.venv/bin/python gridsprite.py sample_1.png -o out [--keep-bg] [--despeckle N] [--swap '#old=#new']` |
-| Editor (global/region recoloring; rectangle select; brush, fill, erase and pick tools; zoom and pan; pixel grid; undo, themes) | `.venv/bin/python gridsprite_gui.py` → http://127.0.0.1:8642 |
+| Editor (global/region recoloring; rectangle select; brush, fill, erase and pick tools; zoom and pan; pixel grid; undo, themes) | open `docs/index.html`, or serve `docs/` (see [Static site](#static-site)) |
 | HTTP API for scripts and agents ([API.md](API.md)) | `.venv/bin/python gridsprite_api.py` → http://127.0.0.1:8643 |
 
 The CLI processes every image in the current directory when you don't name any files.
 
-The editor and the API listen on localhost only. To use them from other devices on your network, add `--host 0.0.0.0`. Anyone on that network can then use them.
+The API listens on localhost only. To use it from other devices on your network, add `--host 0.0.0.0`. Anyone on that network can then use it.
 
 ## Static site
 

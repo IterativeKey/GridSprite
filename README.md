@@ -12,6 +12,8 @@ Gridsprite takes upscaled, anti-aliased or JPEG-smeared pixel art and recovers t
 
 ## How it works
 
+Clean pixel art skips steps 1–3. This means at most 256 colors, every pixel fully opaque or fully clear, drawn in even square blocks, at its true size or as a crisp nearest-neighbor upscale. Gridsprite reads it exactly: same colors, same transparency, one cell per art pixel. Everything else goes through the full pipeline:
+
 1. **Grid detection:** finds the largest cell size whose edges all line up, so an 8px sub-phase never beats the real 16px grid.
 2. **Rectification:** takes each cell's dominant color from its center, ignoring anti-aliasing halos.
 3. **Palette quantization:** merges near-identical colors (tolerance 18 by default).
@@ -29,7 +31,7 @@ python3 -m venv .venv && .venv/bin/pip install numpy pillow
 | Tool | Command |
 |---|---|
 | CLI | `.venv/bin/python gridsprite.py sample_1.png -o out [--keep-bg] [--despeckle N] [--swap '#old=#new']` |
-| Editor (global/region/brush recoloring, undo, themes) | `.venv/bin/python gridsprite_gui.py` → http://127.0.0.1:8642 |
+| Editor (global/region recoloring; brush, fill, erase and pick tools; pixel grid; undo, themes) | `.venv/bin/python gridsprite_gui.py` → http://127.0.0.1:8642 |
 | HTTP API for scripts and agents ([API.md](API.md)) | `.venv/bin/python gridsprite_api.py` → http://127.0.0.1:8643 |
 
 The CLI processes every image in the current directory when you don't name any files.
@@ -44,7 +46,7 @@ To check that the JS port matches the Python pipeline byte-for-byte on every `sa
 
 ```bash
 .venv/bin/python tools/validate_static.py && node tools/validate_static.mjs
-# → 114/114 checks passed — equivalence verified
+# → 156/156 checks passed — equivalence verified
 ```
 
 ## License

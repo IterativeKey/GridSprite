@@ -216,7 +216,7 @@ main {
   overflow: hidden;
 }
 canvas { display: block; image-rendering: pixelated; touch-action: none; }
-#overlay { position: absolute; inset: 0; pointer-events: none; }
+#overlay, #gridlines { position: absolute; inset: 0; pointer-events: none; }
 .tipbar {
   margin-top: 10px; padding: 8px 12px;
   border-radius: 9px;
@@ -480,6 +480,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="canvas-scroll" id="canvasScroll">
         <div id="canvaswrap">
           <canvas id="c"></canvas>
+          <canvas id="gridlines"></canvas>
           <canvas id="overlay"></canvas>
         </div>
       </div>
@@ -488,11 +489,11 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
     <div id="empty" class="empty">
       <div class="empty-inner">
         <h2>Recover a pixel grid in four steps</h2>
-        <p>Drop upscaled, anti-aliased or smeared pixel-art images anywhere on this page. Gridsprite detects the original grid, quantizes the palette and lets you recolor before export.</p>
+        <p>Drop upscaled, anti-aliased or smeared pixel-art images anywhere on this page. Gridsprite detects the original grid, quantizes the palette and lets you edit before export. Clean pixel art, at its true size or a crisp upscale, opens exactly as drawn, transparency included.</p>
         <ol class="steps">
           <li><span><b>Add</b>&nbsp;— drop, or click <b>Files</b> to browse.</span></li>
           <li><span><b>Review</b>&nbsp;— select a file; check the detected grid &amp; palette.</span></li>
-          <li><span><b>Recolor</b>&nbsp;— global, by region, or brush-paint cells.</span></li>
+          <li><span><b>Edit</b>&nbsp;— recolor globally or by region, or draw: brush, fill, erase, pick.</span></li>
           <li><span><b>Export</b>&nbsp;— download crisp SVG + PNG + palette (individually or as one ZIP).</span></li>
         </ol>
       </div>
@@ -505,7 +506,10 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="segmented" id="modes">
         <button class="seg on" data-mode="global" type="button" aria-pressed="true">Global</button>
         <button class="seg" data-mode="region" type="button" aria-pressed="false">Region</button>
-        <button class="seg" data-mode="brush" type="button" aria-pressed="false">Brush</button>
+        <button class="seg" data-mode="brush" type="button" aria-pressed="false" title="Brush (B)">Brush</button>
+        <button class="seg" data-mode="fill" type="button" aria-pressed="false" title="Fill (F)">Fill</button>
+        <button class="seg" data-mode="erase" type="button" aria-pressed="false" title="Erase (E)">Erase</button>
+        <button class="seg" data-mode="pick" type="button" aria-pressed="false" title="Pick color (I)">Pick</button>
       </div>
       <div class="row" id="connrow" hidden>
         <label><input type="radio" name="conn" value="4" checked>4-connected</label>
@@ -531,6 +535,10 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
           <div class="muted-note" id="bghint"></div>
         </span>
         <input type="checkbox" class="switch" id="bgchk" checked>
+      </label>
+      <label class="switchrow">
+        <span>Pixel grid</span>
+        <input type="checkbox" class="switch" id="gridchk" checked>
       </label>
       <div class="row">
         <label for="desp">Despeckle regions under</label>

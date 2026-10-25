@@ -64,9 +64,9 @@ in a query string silently truncates the query — the #1 calling mistake.
 ```jsonc
 {
   "ok": true,
-  "grid": {"rows": 63, "cols": 63, "raw_rmse": 21.4, ...},
+  "grid": {"rows": 63, "cols": 63, "exact": false, "raw_rmse": 21.4, ...},
   "palette": ["#fbf0d8", "#c25f2e"],       // index i ⇔ mapping value i ⇔ SVG <g id="pc{i}">
-  "mapping": [[0,0,...],[...]],            // rows×cols palette indices (unless include_mapping=0)
+  "mapping": [[0,0,...],[...]],            // rows×cols palette indices, -1 = transparent (unless include_mapping=0)
   "background": {"detected": true, "index": 0, "hex": "#fbf0d8",
                  "border_share": 1.0, "transparent": true,
                  "edge_cells": 2146, "interior_kept": 0},
@@ -86,6 +86,11 @@ Background rule (consistent everywhere): the dominant border-ring color
 (≥30% share) is removed **only where 4-connected to the border**; interior
 islands of the same color stay opaque. `keep_bg=1` disables removal entirely.
 
+Clean pixel art (at most 256 colors, every pixel fully opaque or fully
+clear, even square blocks from the top-left) skips detection and is read
+exactly, at native size or from a nearest-neighbor upscale: `grid.exact` is
+`true`, the palette holds its exact colors, and clear pixels map to `-1`.
+
 ## 3. Advance an edit with analyze → render
 
 For recolors not expressible as palette-wide swaps (e.g. repaint one region),
@@ -95,7 +100,7 @@ round-trip:
    `background`.
 2. Mutate: append a color to `palette` / rewrite `mapping` cells / flip
    `background.index` handling as needed. Keep indices valid:
-   `0 ≤ mapping[y][x] < len(palette)`.
+   `-1 ≤ mapping[y][x] < len(palette)`, where `-1` is a transparent cell.
 3. `POST /api/v1/render` with JSON body:
 
 ```json
@@ -143,6 +148,6 @@ query was truncated, not that the colors are wrong.
 - [ ] `png_rendered` may be `null` when no size was requested
 - [ ] `despeckle` needs ≥2 to do anything (0/1 = off)
 - [ ] Large `color_tol` can eat fine details; check `fidelity_delta`
-- [ ] `mapping` indices must stay inside the palette when editing
+- [ ] `mapping` indices must stay inside the palette when editing (`-1` = transparent)
 - [ ] The API is localhost-only (default) and stateless — nothing is cached
       between calls; save artifacts you need.

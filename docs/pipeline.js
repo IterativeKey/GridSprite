@@ -6,8 +6,11 @@
  * against the Python implementation on the repo's sample images
  * (see tools/validate_static.py + tools/validate_static.mjs).
  *
- * Image input: { width, height, data } with data = Uint8ClampedArray RGB
- * (3 bytes per pixel, row-major), matching PIL's Image.convert("RGB").
+ * Image input: { width, height, data } with data = Uint8ClampedArray RGBA
+ * (4 bytes per pixel, row-major), matching PIL's Image.convert("RGBA").
+ * Clean pixel art is read exactly (exactGrid); everything else goes through
+ * detection on the RGB channels. Mapping value CLEAR (-1) is a transparent
+ * cell.
  *
  * Runs both in the browser (window.GridSprite) and under node
  * (module.exports) for validation.
@@ -16,6 +19,8 @@
 
 const SEARCH_STEP = 0.05;   // candidate cell sizes, px
 const ALIGN_TOL = 0.25;     // peak may sit at most 0.25*step from a grid line
+const CLEAR = -1;           // mapping value of a transparent cell
+const MAX_EXACT_COLORS = 256;
 
 /* ------------------------------------------------------------- math utils */
 
@@ -227,6 +232,75 @@ function detectGrid(img, minScale, maxScale){
     sx: gx.step, x0: gx.phase, sy: gy.step, y0: gy.phase,
     ncols, nrows, devX: gx.dev, devY: gy.dev,
   };
+}
+
+/* -------------------------------------------------------- exact pixel art */
+
+/* Clean pixel art read exactly: {grid, palette, mapping}, or null. Port of
+ * exact_grid: only fully opaque or fully clear pixels, at most
+ * MAX_EXACT_COLORS colors, even square blocks from the top-left corner (the
+ * largest such block is one cell). Palette ordered by cell count, ties by
+ * color value; clear cells map to CLEAR. */
+function exactGrid(image){
+  const W = image.width, H = image.height, d = image.data;
+  const key = new Int32Array(W * H);
+  for (let i = 0; i < W * H; i++){
+    const a = d[i*4+3];
+    if (a !== 0 && a !== 255) return null;
+    key[i] = a === 255 ? (d[i*4] << 16) | (d[i*4+1] << 8) | d[i*4+2] : CLEAR;
+  }
+  let side = W, b = H;
+  while (b){ [side, b] = [b, side % b]; }
+  let block = side;
+  for (; block >= 1; block--){
+    if (side % block) continue;
+    let even = true;
+    for (let y = 0; y < H && even; y++){
+      const row = Math.floor(y / block) * block * W;
+      for (let x = 0; x < W; x++){
+        if (key[y * W + x] !== key[row + Math.floor(x / block) * block]){ even = false; break; }
+      }
+    }
+    if (even) break;
+  }
+  const nrows = H / block, ncols = W / block;
+  if (nrows < 2 || ncols < 2) return null;
+  const counts = new Map();
+  const small = new Int32Array(nrows * ncols);
+  for (let y = 0; y < nrows; y++){
+    for (let x = 0; x < ncols; x++){
+      const k = key[y * block * W + x * block];
+      small[y * ncols + x] = k;
+      if (k !== CLEAR) counts.set(k, (counts.get(k) || 0) + 1);
+    }
+  }
+  if (counts.size === 0 || counts.size > MAX_EXACT_COLORS) return null;
+  const colors = [...counts.keys()].sort((p, q) => p - q)
+    .sort((p, q) => counts.get(q) - counts.get(p));   // stable: ties by value
+  const rank = new Map(colors.map((c, k) => [c, k]));
+  const mapping = new Int32Array(nrows * ncols);
+  for (let i = 0; i < mapping.length; i++){
+    mapping[i] = small[i] === CLEAR ? CLEAR : rank.get(small[i]);
+  }
+  const palette = new Uint8Array(colors.length * 3);
+  colors.forEach((c, k) => {
+    palette[k*3] = (c >> 16) & 255; palette[k*3+1] = (c >> 8) & 255; palette[k*3+2] = c & 255;
+  });
+  const zero = new Float64Array(1);
+  return {
+    grid: { sx: block, x0: 0, sy: block, y0: 0, ncols, nrows, devX: zero, devY: zero, exact: true },
+    palette, mapping,
+  };
+}
+
+/* RGBA image -> the RGB image grid detection reads. */
+function rgbOf(image){
+  const n = image.width * image.height, d = image.data;
+  const rgb = new Uint8Array(n * 3);
+  for (let i = 0; i < n; i++){
+    rgb[i*3] = d[i*4]; rgb[i*3+1] = d[i*4+1]; rgb[i*3+2] = d[i*4+2];
+  }
+  return { width: image.width, height: image.height, data: rgb };
 }
 
 /* ----------------------------------------------------------- rectification */
@@ -442,7 +516,7 @@ function despeckle(mapping, nrows, ncols, maxSize, skipIdx){
   }
   let removedRegions = 0, removedCells = 0;
   for (const reg of regions){
-    if (skip.has(reg.c) || reg.cells.length >= maxSize) continue;
+    if (reg.c === CLEAR || skip.has(reg.c) || reg.cells.length >= maxSize) continue;
     const c = reg.c;
     const votes = new Map();
     for (const key of reg.cells){
@@ -472,11 +546,12 @@ function despeckle(mapping, nrows, ncols, maxSize, skipIdx){
 }
 
 function detectBackground(mapping, nrows, ncols){
+  // transparent cells never count as the background color
   const counts = new Map();
   let ringLen = 0;
   const visit = (y, x) => {
     const v = mapping[y * ncols + x];
-    counts.set(v, (counts.get(v) || 0) + 1);
+    if (v !== CLEAR) counts.set(v, (counts.get(v) || 0) + 1);
     ringLen++;
   };
   for (let x = 0; x < ncols; x++){ visit(0, x); visit(nrows - 1, x); }
@@ -487,6 +562,7 @@ function detectBackground(mapping, nrows, ncols){
     const cnt = counts.get(idx);
     if (cnt > maxCount){ maxCount = cnt; maxIdx = idx; }
   }
+  if (maxIdx < 0) return { idx: 0, share: 0 };
   return { idx: maxIdx, share: maxCount / ringLen };
 }
 
@@ -541,11 +617,10 @@ function connectedRegions(mapping, nrows, ncols){
 /* --------------------------------------------------------------- meshing */
 
 function mesh(mapping, nrows, ncols, freeMask){
-  // free = all ones, minus free_mask cells (transparent background)
+  // free = all cells, minus transparent ones and free_mask cells (background)
   const free = new Uint8Array(nrows * ncols);
-  free.fill(1);
-  if (freeMask){
-    for (let i = 0; i < free.length; i++) free[i] = freeMask[i] ? 0 : 1;
+  for (let i = 0; i < free.length; i++){
+    free[i] = mapping[i] === CLEAR || (freeMask && freeMask[i]) ? 0 : 1;
   }
   const rects = [];
   for (let y = 0; y < nrows; y++){
@@ -611,6 +686,7 @@ function svgString(palette, rects, ncols, nrows, transparentIdx){
 function coloredRGBA(palette, mapping, nrows, ncols, bgMask){
   const rgba = new Uint8Array(nrows * ncols * 4);
   for (let i = 0; i < nrows * ncols; i++){
+    if (mapping[i] === CLEAR) continue;   // clear black
     const p = mapping[i] * 3, q = i * 4;
     rgba[q] = palette[p];
     rgba[q+1] = palette[p+1];
@@ -638,7 +714,7 @@ function scaleNearest(rgba, nrows, ncols, W, H){
 function paletteFiles(palette, mapping, nrows, ncols, transparentIdx){
   const K = palette.length / 3;
   const counts = new Array(K).fill(0);
-  for (let i = 0; i < nrows * ncols; i++) counts[mapping[i]]++;
+  for (let i = 0; i < nrows * ncols; i++) if (mapping[i] !== CLEAR) counts[mapping[i]]++;
   const entries = [];
   for (let k = 0; k < K; k++){
     entries.push({
@@ -667,16 +743,26 @@ function to2D(mapping, nrows, ncols){
 }
 
 /* Equivalent of the server's /analyze.
- * image: {width, height, data (RGB bytes)}; opts: {name, colorTol, minScale, maxScale} */
+ * image: {width, height, data (RGBA bytes)}; opts: {name, colorTol, minScale, maxScale} */
 function analyzeImage(image, opts){
   opts = opts || {};
   const colorTol = opts.colorTol !== undefined ? opts.colorTol : 18.0;
   const minScale = opts.minScale !== undefined ? opts.minScale : 4.0;
   const maxScale = opts.maxScale !== undefined ? opts.maxScale : 64.0;
   const W = image.width, H = image.height;
-  const grid = detectGrid(image, minScale, maxScale);
-  const { cells, rmse } = rectify(image, grid);
-  const { palette, mapping } = buildPalette(cells, grid.nrows, grid.ncols, colorTol);
+  let grid, rmse, palette, mapping;
+  const exact = exactGrid(image);
+  if (exact){
+    ({ grid, palette, mapping } = exact);
+    rmse = 0;
+  } else {
+    const rgb = rgbOf(image);
+    grid = detectGrid(rgb, minScale, maxScale);
+    grid.exact = false;
+    let cells;
+    ({ cells, rmse } = rectify(rgb, grid));
+    ({ palette, mapping } = buildPalette(cells, grid.nrows, grid.ncols, colorTol));
+  }
   const { idx: bgIdx, share } = detectBackground(mapping, grid.nrows, grid.ncols);
   const transparent = share >= 0.3 ? bgIdx : null;
   const sortedX = Float64Array.from(grid.devX).sort();
@@ -689,7 +775,7 @@ function analyzeImage(image, opts){
   return {
     name: opts.name || "dropped.png",
     sourceW: W, sourceH: H,
-    ncols: grid.ncols, nrows: grid.nrows,
+    ncols: grid.ncols, nrows: grid.nrows, exact: grid.exact,
     cellW: Math.round(grid.sx * 100) / 100,
     cellH: Math.round(grid.sy * 100) / 100,
     rmse: Math.round(rmse * 100) / 100,
@@ -709,7 +795,7 @@ function analyzeImage(image, opts){
 function exportArtifacts(state, despeckleSize){
   despeckleSize = despeckleSize || 0;
   const nrows = state.mapping.length, ncols = state.mapping[0].length;
-  let mapping = new Uint16Array(nrows * ncols);
+  let mapping = new Int32Array(nrows * ncols);
   for (let y = 0; y < nrows; y++)
     for (let x = 0; x < ncols; x++) mapping[y * ncols + x] = state.mapping[y][x];
   const paletteFlat = new Uint8Array(state.palette.length * 3);
@@ -755,9 +841,9 @@ function exportArtifacts(state, despeckleSize){
 /* --------------------------------------------------------------- exports */
 
 const GridSprite = {
-  SEARCH_STEP, ALIGN_TOL, rint, roundHalfEven, percentile, median,
+  SEARCH_STEP, ALIGN_TOL, CLEAR, rint, roundHalfEven, percentile, median,
   edgeProfile, findStrongPeaks, circularPhase, peakDeviations,
-  detectGrid, detectGridAxis, rectify, buildPalette, despeckle,
+  detectGrid, detectGridAxis, exactGrid, rgbOf, rectify, buildPalette, despeckle,
   detectBackground, backgroundMask, connectedRegions, mesh,
   hexc, unhex, svgString, coloredRGBA, scaleNearest, paletteFiles,
   analyzeImage, exportArtifacts,

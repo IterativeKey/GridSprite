@@ -62,8 +62,9 @@ for (const f of expFiles){
     `${res.bgShare} vs ${exp.bgShare}`);
   check("transparent", res.transparent === exp.transparent,
     `${res.transparent} vs ${exp.transparent}`);
-  {
-    const g = GS.detectGrid(img, 4.0, 64.0);
+  check("exact", res.exact === exp.exact, `${res.exact} vs ${exp.exact}`);
+  if (!exp.exact){
+    const g = GS.detectGrid(GS.rgbOf(img), 4.0, 64.0);
     check("x0", near(g.x0, exp.x0, 5e-3), `${g.x0} vs ${exp.x0}`);
     check("y0", near(g.y0, exp.y0, 5e-3), `${g.y0} vs ${exp.y0}`);
   }

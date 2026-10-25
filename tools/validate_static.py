@@ -2,8 +2,9 @@
 """tools/validate_static.py — dump reference outputs of gridsprite.py for the
 JS-port equivalence check (run tools/validate_static.mjs afterwards).
 
-Writes to <outdir>/ for every sample_*.png:
-    <base>.raw          raw RGB uint8 bytes (the decoder-independent input)
+Writes to <outdir>/ for every sample_*.png, and for generated clean pixel
+art (read exactly, with transparent cells):
+    <base>.raw          raw RGBA uint8 bytes (the decoder-independent input)
     <base>.expected.json  reference derived values incl. SVG text and RGBA
 """
 import base64
@@ -20,19 +21,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import gridsprite as gs
 
 
-def dump(path, outdir):
-    base = os.path.splitext(os.path.basename(path))[0]
+def pixel_art(block):
+    """Deterministic clean pixel art: 24x18 cells of 9 colors with clear
+    pixels around and inside it, each cell drawn as block x block pixels."""
+    rng = np.random.default_rng(7)
+    colors = rng.integers(0, 256, size=(9, 3))
+    cells = rng.integers(0, len(colors), size=(18, 24))
+    rgba = np.zeros((18, 24, 4), dtype=np.uint8)
+    rgba[:, :, :3] = colors[cells]
+    rgba[:, :, 3] = 255
+    rgba[:3] = 0
+    rgba[8:11, 10:14] = 0
+    return np.repeat(np.repeat(rgba, block, axis=0), block, axis=1)
+
+
+def dump(base, img_u8, outdir):
     raw = os.path.join(outdir, base + ".raw")
     exp = os.path.join(outdir, base + ".expected.json")
-
-    img_u8 = np.asarray(Image.open(path).convert("RGB"))
     with open(raw, "wb") as f:
         f.write(img_u8.tobytes())
 
-    img = img_u8.astype(np.float64)
-    grid = gs.detect_grid(img, 4.0, 64.0)
-    cells, rmse = gs.rectify(img, grid)
-    palette, mapping = gs.build_palette(cells, 18.0)
+    grid, _, rmse, palette, mapping = gs.recover(img_u8, 18.0, 4.0, 64.0)
+    img = img_u8
     idx, share = gs.detect_background(mapping)
     transparent = int(idx) if share >= 0.3 else None
     bg_mask = None
@@ -62,6 +72,7 @@ def dump(path, outdir):
         "sx": float(grid.sx), "sy": float(grid.sy),
         "x0": float(grid.x0), "y0": float(grid.y0),
         "ncols": int(grid.ncols), "nrows": int(grid.nrows),
+        "exact": bool(grid.exact),
         "rmse": float(rmse),
         "medianX": float(np.median(grid.score_x)),
         "medianY": float(np.median(grid.score_y)),
@@ -95,9 +106,12 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
     files = sorted(glob.glob(os.path.join(root, "sample_*.png")))
-    print(f"Reference dump for {len(files)} samples -> {outdir}")
+    print(f"Reference dump for {len(files)} samples + 2 pixel-art fixtures -> {outdir}")
     for p in files:
-        dump(p, outdir)
+        dump(os.path.splitext(os.path.basename(p))[0],
+             np.asarray(Image.open(p).convert("RGBA")), outdir)
+    dump("pixel_art_native", pixel_art(1), outdir)
+    dump("pixel_art_x7", pixel_art(7), outdir)
     print("done")
 
 

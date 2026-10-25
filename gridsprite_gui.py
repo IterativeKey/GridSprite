@@ -46,10 +46,8 @@ MAX_BODY = 64 * 1024 * 1024      # 64 MB upload cap
 # ------------------------------------------------------------------ analysis
 
 def analyze(name, blob, color_tol=18.0, min_scale=4.0, max_scale=64.0):
-    img = np.asarray(Image.open(io.BytesIO(blob)).convert("RGB")).astype(np.float64)
-    grid = px.detect_grid(img, min_scale, max_scale)
-    cells, rmse = px.rectify(img, grid)
-    palette, mapping = px.build_palette(cells, color_tol)
+    img = px.load_rgba(io.BytesIO(blob))
+    grid, _, rmse, palette, mapping = px.recover(img, color_tol, min_scale, max_scale)
     bg_idx, bg_share = px.detect_background(mapping)
     transparent = bg_idx if bg_share >= 0.3 else None
     sid = uuid.uuid4().hex[:12]
@@ -65,7 +63,7 @@ def analyze(name, blob, color_tol=18.0, min_scale=4.0, max_scale=64.0):
     return {
         "sid": sid, "name": name,
         "sourceW": img.shape[1], "sourceH": img.shape[0],
-        "ncols": grid.ncols, "nrows": grid.nrows,
+        "ncols": grid.ncols, "nrows": grid.nrows, "exact": grid.exact,
         "cellW": round(grid.sx, 2), "cellH": round(grid.sy, 2),
         "rmse": round(rmse, 2),
         "alignment": [round(float(np.median(grid.score_x)), 2),
@@ -425,7 +423,7 @@ main {
   overflow: hidden;
 }
 canvas { display: block; image-rendering: pixelated; touch-action: none; }
-#overlay { position: absolute; inset: 0; pointer-events: none; }
+#overlay, #gridlines { position: absolute; inset: 0; pointer-events: none; }
 .tipbar {
   margin-top: 10px; padding: 8px 12px;
   border-radius: 9px;
@@ -689,6 +687,7 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="canvas-scroll" id="canvasScroll">
         <div id="canvaswrap">
           <canvas id="c"></canvas>
+          <canvas id="gridlines"></canvas>
           <canvas id="overlay"></canvas>
         </div>
       </div>
@@ -697,11 +696,11 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
     <div id="empty" class="empty">
       <div class="empty-inner">
         <h2>Recover a pixel grid in four steps</h2>
-        <p>Drop upscaled, anti-aliased or smeared pixel-art images anywhere on this page. Gridsprite detects the original grid, quantizes the palette and lets you recolor before export.</p>
+        <p>Drop upscaled, anti-aliased or smeared pixel-art images anywhere on this page. Gridsprite detects the original grid, quantizes the palette and lets you edit before export. Clean pixel art, at its true size or a crisp upscale, opens exactly as drawn, transparency included.</p>
         <ol class="steps">
           <li><span><b>Add</b>&nbsp;— drop, or click <b>Files</b> to browse.</span></li>
           <li><span><b>Review</b>&nbsp;— select a file; check the detected grid &amp; palette.</span></li>
-          <li><span><b>Recolor</b>&nbsp;— global, by region, or brush-paint cells.</span></li>
+          <li><span><b>Edit</b>&nbsp;— recolor globally or by region, or draw: brush, fill, erase, pick.</span></li>
           <li><span><b>Export</b>&nbsp;— crisp SVG + PNG + palette, written to <code>out/</code>.</span></li>
         </ol>
       </div>
@@ -714,7 +713,10 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="segmented" id="modes">
         <button class="seg on" data-mode="global" type="button" aria-pressed="true">Global</button>
         <button class="seg" data-mode="region" type="button" aria-pressed="false">Region</button>
-        <button class="seg" data-mode="brush" type="button" aria-pressed="false">Brush</button>
+        <button class="seg" data-mode="brush" type="button" aria-pressed="false" title="Brush (B)">Brush</button>
+        <button class="seg" data-mode="fill" type="button" aria-pressed="false" title="Fill (F)">Fill</button>
+        <button class="seg" data-mode="erase" type="button" aria-pressed="false" title="Erase (E)">Erase</button>
+        <button class="seg" data-mode="pick" type="button" aria-pressed="false" title="Pick color (I)">Pick</button>
       </div>
       <div class="row" id="connrow" hidden>
         <label><input type="radio" name="conn" value="4" checked>4-connected</label>
@@ -740,6 +742,10 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
           <div class="muted-note" id="bghint"></div>
         </span>
         <input type="checkbox" class="switch" id="bgchk" checked>
+      </label>
+      <label class="switchrow">
+        <span>Pixel grid</span>
+        <input type="checkbox" class="switch" id="gridchk" checked>
       </label>
       <div class="row">
         <label for="desp">Despeckle regions under</label>
@@ -779,22 +785,29 @@ let current = null;               // sid being edited
 let mode = "global", conn = 4;
 let selColor = -1;                // selected palette index (source, shimmer)
 let selection = new Set();        // region selection as "y,x" keys
-let brushColor = -1;              // palette index used by brush
+const CLEAR_CELL = -1;                 // mapping value of a transparent cell
+let brushColor = null;            // palette index used by brush and fill
 let undoStack = [];
 let dragging = false;
+let lastPaint = null;             // last cell a brush or erase drag painted
 
 const $ = id => document.getElementById(id);
 const c = $("c"), ctx = c.getContext("2d", {willReadFrequently:false});
 const o = $("overlay"), octx = o.getContext("2d");
+const g = $("gridlines"), gctx = g.getContext("2d");
 const canvasScroll = $("canvasScroll");
 let view = {scale: 8};
 let hoverPos = null;              // [y, x] under cursor (brush shimmer)
 let shimmerRAF = 0;
+let fillPreview = null;           // {key, cells} region under the cursor in fill mode
 
 const modeTips = {
   global: "<b>Global</b> — click a palette color to shimmer-preview every cell it would change, then click another color, a preset or <b>Apply to affected</b> to recolor the group.",
   region: "<b>Region</b> — click a cluster of same-colored cells (4- or 8-connected) to shimmer-select it, then click a color or preset to recolor it.",
-  brush:  "<b>Brush</b> — pick a color (palette chip, preset row or the picker), then drag on the canvas to paint. The cell under the pointer shimmers.",
+  brush:  "<b>Brush</b> — pick a color (palette chip, preset row or the picker), then drag on the canvas to paint. The cell under the pointer shimmers. Alt-click picks a color from the canvas.",
+  fill:   "<b>Fill</b> — pick a color, then click a cluster of same-colored or transparent cells (4- or 8-connected) to fill it. The shimmer shows what would change. Alt-click picks a color.",
+  erase:  "<b>Erase</b> — drag on the canvas to make cells transparent.",
+  pick:   "<b>Pick</b> — click a cell to take its color for the brush; picking a transparent cell switches to Erase.",
 };
 
 /* ----------------------------------------------------------------- theme */
@@ -810,8 +823,10 @@ applyTheme((() => {
   if (t === "dark" || t === "light") return t;
   return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 })());
-themeBtn.onclick = () =>
+themeBtn.onclick = () => {
   applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  if (current) renderGrid();
+};
 
 /* ----------------------------------------------------------------- utils */
 function newSid(){ return Math.random().toString(36).slice(2,10); }
@@ -909,6 +924,12 @@ function refreshFileStatus(sid){
 
 function updateStats(){
   const s = sessions[current];
+  if (s.exact){
+    $("stats").textContent =
+      `${s.sourceW}×${s.sourceH} source · clean pixel art read exactly` +
+      ` · ${sessionDims(s)} grid (${s.cellW}px blocks) · ${s.palette.length} colors`;
+    return;
+  }
   $("stats").textContent =
     `${s.sourceW}×${s.sourceH} source · grid ${sessionDims(s)}` +
     ` (${s.cellW}×${s.cellH}px cells) · ${s.palette.length} colors` +
@@ -975,12 +996,34 @@ function renderCanvas(){
     }
   }
   octx.clearRect(0, 0, o.width, o.height);
+  fillPreview = null;
+  renderGrid();
   updateShimmer();
+}
+
+function renderGrid(){
+  const s = sessions[current];
+  const k = view.scale;
+  g.width = c.width; g.height = c.height;
+  if (!$("gridchk").checked || k < 4) return;
+  const rgb = getComputedStyle(document.documentElement)
+    .getPropertyValue("--shimmer").trim() || "255,255,255";
+  gctx.strokeStyle = `rgba(${rgb},0.16)`;
+  gctx.lineWidth = 1;
+  gctx.beginPath();
+  for (let x = 1; x < s.ncols; x++){ gctx.moveTo(x*k + 0.5, 0); gctx.lineTo(x*k + 0.5, g.height); }
+  for (let y = 1; y < s.nrows; y++){ gctx.moveTo(0, y*k + 0.5); gctx.lineTo(g.width, y*k + 0.5); }
+  gctx.stroke();
 }
 
 function isTransparent(y, x){
   const s = sessions[current];
-  return s.bgMask !== undefined && s.bgMask.has(y + "," + x);
+  return s.mapping[y][x] === CLEAR_CELL ||
+    (s.bgMask !== undefined && s.bgMask.has(y + "," + x));
+}
+
+function colorName(i){
+  return i === CLEAR_CELL ? "transparent" : sessions[current].palette[i];
 }
 
 /* --------------------------------------------------------------- shimmer */
@@ -995,7 +1038,14 @@ function affectedCells(){
     for (let y = 0; y < s.nrows; y++)
       for (let x = 0; x < s.ncols; x++)
         if (s.mapping[y][x] === selColor) out.add(y + "," + x);
-  } else if (mode === "brush" && hoverPos && brushColor >= 0){
+  } else if (mode === "fill" && hoverPos && brushColor !== null){
+    const key = hoverPos + "/" + conn;
+    if (!fillPreview || fillPreview.key !== key)
+      fillPreview = {key, cells: regionAt(hoverPos[0], hoverPos[1])};
+    if (s.mapping[hoverPos[0]][hoverPos[1]] !== brushColor)
+      fillPreview.cells.forEach(k => out.add(k));
+  } else if (hoverPos && ((mode === "brush" && brushColor !== null) ||
+                          mode === "erase" || mode === "pick")){
     out.add(hoverPos[0] + "," + hoverPos[1]);
   }
   return out.size ? out : null;
@@ -1103,7 +1153,8 @@ function paletteClick(i){
     selection.clear(); selColor = -1;
   } else {
     brushColor = i; selColor = -1;
-    toast(`Brush → ${s.palette[i]}`);
+    if (mode === "erase" || mode === "pick") setMode("brush");
+    toast(`${mode === "fill" ? "Fill" : "Brush"} → ${s.palette[i]}`);
   }
   renderCanvas(); renderPalette();
 }
@@ -1130,10 +1181,11 @@ function applyCustomColor(){
     refreshFileStatus(current);
     toast(`Region recolored → ${hex}`);
     selection.clear(); selColor = -1;
-  } else if (mode === "brush"){
+  } else if (mode === "brush" || mode === "fill" || mode === "erase" || mode === "pick"){
     brushColor = ensureColor(hex);
     selColor = -1;
-    toast(`Brush → ${hex}`);
+    if (mode === "erase" || mode === "pick") setMode("brush");
+    toast(`${mode === "fill" ? "Fill" : "Brush"} → ${hex}`);
   } else {
     if (selColor < 0){ toast("Select a palette color first (shimmer shows what would change)"); return; }
     snapshot();
@@ -1147,6 +1199,12 @@ function applyCustomColor(){
 }
 
 function selectRegion(y, x){
+  selection = regionAt(y, x);
+  selColor = sessions[current].mapping[y][x];
+}
+
+// cells of the 4- or 8-connected same-valued cluster at (y, x), as "y,x" keys
+function regionAt(y, x){
   const s = sessions[current];
   const start = s.mapping[y][x];
   const sel = new Set([y + "," + x]);
@@ -1164,8 +1222,34 @@ function selectRegion(y, x){
         if (!sel.has(key)){ sel.add(key); stack.push([ny, nx]); }
       }
   }
-  selection = sel;
-  selColor = start;
+  return sel;
+}
+
+function pickAt(y, x){
+  const s = sessions[current];
+  const v = s.mapping[y][x];
+  if (v === CLEAR_CELL){
+    setMode("erase");
+    toast("Picked transparent → Erase");
+    return;
+  }
+  brushColor = v;
+  if (mode === "pick") setMode("brush");
+  toast(`Picked ${s.palette[v]}`);
+}
+
+function fillAt(y, x){
+  const s = sessions[current];
+  if (s.mapping[y][x] === brushColor) return;
+  snapshot();
+  const cells = regionAt(y, x);
+  cells.forEach(key => {
+    const [cy, cx] = key.split(",").map(Number);
+    s.mapping[cy][cx] = brushColor;
+  });
+  s.edited = true;
+  refreshFileStatus(current);
+  renderCanvas(); renderPalette();
 }
 
 /* ------------------------------------------------------- canvas pointers */
@@ -1187,19 +1271,25 @@ c.addEventListener("pointerdown", ev => {
     selectRegion(y, x);
     renderCanvas();
     const s = sessions[current];
-    $("tipbar").textContent = `Selected ${selection.size} cells (${s.palette[selColor]}) — click a palette color, a preset or Apply to recolor them; click elsewhere for a different region.`;
-  } else if (mode === "brush"){
-    if (brushColor < 0){ toast("Pick a brush color from the palette first"); return; }
+    $("tipbar").textContent = `Selected ${selection.size} cells (${colorName(selColor)}) — click a palette color, a preset or Apply to recolor them; click elsewhere for a different region.`;
+  } else if (mode === "pick" || (ev.altKey && (mode === "brush" || mode === "fill"))){
+    pickAt(y, x);
+  } else if (mode === "fill"){
+    if (brushColor === null){ toast("Pick a fill color from the palette first"); return; }
+    fillAt(y, x);
+  } else if (mode === "brush" || mode === "erase"){
+    if (mode === "brush" && brushColor === null){ toast("Pick a brush color from the palette first"); return; }
     dragging = true;
     c.setPointerCapture(ev.pointerId);
-    snapshot(); paintCell(y, x);
+    snapshot(); paintCell(y, x); lastPaint = pos;
   }
   ev.preventDefault();
 });
 
 c.addEventListener("pointermove", ev => {
-  if (dragging && mode === "brush"){
-    const pos = canvasPos(ev); if (pos) paintCell(pos[0], pos[1]);
+  if (dragging && (mode === "brush" || mode === "erase")){
+    const pos = canvasPos(ev); if (pos) paintLine(lastPaint || pos, pos);
+    lastPaint = pos;
     return;
   }
   hoverPos = canvasPos(ev);
@@ -1208,20 +1298,32 @@ c.addEventListener("pointermove", ev => {
 
 c.addEventListener("pointerleave", () => { hoverPos = null; });
 c.addEventListener("pointercancel", () => { dragging = false; });
-window.addEventListener("pointerup", () => dragging = false);
+window.addEventListener("pointerup", () => {
+  if (dragging && current){ refreshFileStatus(current); renderPalette(); }
+  dragging = false;
+});
+
+// paints every cell on the line between two cells, so fast drags leave no gaps
+function paintLine([y0, x0], [y1, x1]){
+  const n = Math.max(Math.abs(y1 - y0), Math.abs(x1 - x0));
+  for (let i = 1; i <= n; i++)
+    paintCell(Math.round(y0 + (y1 - y0) * i / n), Math.round(x0 + (x1 - x0) * i / n));
+  if (!n) paintCell(y1, x1);
+}
 
 function paintCell(y, x){
   const s = sessions[current];
-  if (s.mapping[y][x] === brushColor) return;
+  const color = mode === "erase" ? CLEAR_CELL : brushColor;
+  if (s.mapping[y][x] === color) return;
   const wasMasked = isTransparent(y, x);
-  s.mapping[y][x] = brushColor;
+  s.mapping[y][x] = color;
   s.edited = true;
-  if (wasMasked || (s.transparentOn && s.transparent === brushColor))
+  if (wasMasked || (s.transparentOn && s.transparent === color))
     s.bgMask = computeBgMask();
   if (isTransparent(y, x)){
     ctx.clearRect(x*view.scale, y*view.scale, view.scale, view.scale);
   } else {
-    ctx.fillStyle = s.palette[brushColor];
+    ctx.fillStyle = s.palette[color];
     ctx.fillRect(x*view.scale, y*view.scale, view.scale, view.scale);
   }
 }
@@ -1295,25 +1397,32 @@ function addExportLinks(d){
 
 /* ----------------------------------------------------------------- wiring */
 
+function setMode(next){
+  document.querySelectorAll("#modes .seg").forEach(x => {
+    const on = x.dataset.mode === next;
+    x.classList.toggle("on", on); x.setAttribute("aria-pressed", String(on));
+  });
+  mode = next;
+  $("connrow").hidden = mode !== "region" && mode !== "fill";
+  $("tip").innerHTML = modeTips[mode];
+  selection.clear(); selColor = -1;
+  c.style.cursor = mode === "global" ? "default" :
+                   mode === "region" || mode === "fill" ? "pointer" : "crosshair";
+  if (current) { renderCanvas(); renderPalette(); }
+}
 document.querySelectorAll("#modes .seg").forEach(m => {
-  m.onclick = () => {
-    document.querySelectorAll("#modes .seg").forEach(x => {
-      x.classList.remove("on"); x.setAttribute("aria-pressed", "false");
-    });
-    m.classList.add("on"); m.setAttribute("aria-pressed", "true");
-    mode = m.dataset.mode;
-    $("connrow").hidden = mode !== "region";
-    $("tip").innerHTML = modeTips[mode];
-    selection.clear(); selColor = -1;
-    c.style.cursor = mode === "brush" ? "crosshair" :
-                     mode === "region" ? "pointer" : "default";
-    if (current) { renderCanvas(); renderPalette(); }
-  };
+  m.onclick = () => setMode(m.dataset.mode);
 });
 $("tip").innerHTML = modeTips.global;
 
 document.querySelectorAll('input[name="conn"]').forEach(r =>
   r.onchange = () => conn = Number(r.value));
+
+try { $("gridchk").checked = localStorage.getItem("gs-grid") !== "off"; } catch (e) {}
+$("gridchk").onchange = () => {
+  try { localStorage.setItem("gs-grid", $("gridchk").checked ? "on" : "off"); } catch (e) {}
+  if (current) renderGrid();
+};
 
 $("bgchk").onchange = () => {
   if (!current) return;
@@ -1358,9 +1467,13 @@ const PRESETS = {
 
 $("applyCustom").onclick = applyCustomColor;
 $("undo").onclick = undo;
+const MODE_KEYS = {b: "brush", f: "fill", e: "erase", i: "pick"};
 window.addEventListener("keydown", e => {
   if ((e.metaKey || e.ctrlKey) && e.key === "z"){
     e.preventDefault(); undo();
+  } else if (!e.metaKey && !e.ctrlKey && !e.altKey && MODE_KEYS[e.key.toLowerCase()] &&
+             !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)){
+    setMode(MODE_KEYS[e.key.toLowerCase()]);
   }
 });
 

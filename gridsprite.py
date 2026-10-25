@@ -5,6 +5,11 @@ Pipeline: grid detection -> rectification (dominant color per cell) ->
 color quantization -> greedy rectangle meshing -> SVG organized by palette
 color (CSS variables, one `<g>` per palette color, for easy recoloring).
 
+Clean pixel art (at most 256 colors, fully opaque or fully clear pixels,
+drawn in even square blocks — at native size or a nearest-neighbor upscale)
+skips detection and quantization: it is read exactly, and its clear pixels
+become transparent cells (palette index -1 in the cell mapping).
+
 Grid detection works per axis on the smoothed luminance edge profile: it
 finds strong edge peaks and picks the LARGEST cell size such that every
 strong edge lies on a single phase of that period. This resolves the
@@ -105,10 +110,77 @@ def detect_grid(img, min_scale, max_scale):
     return Grid(sx, x0, sy, y0, ncols, nrows, dev_x, dev_y)
 
 class Grid:
-    def __init__(self, sx, x0, sy, y0, ncols, nrows, score_x, score_y):
+    def __init__(self, sx, x0, sy, y0, ncols, nrows, score_x, score_y, exact=False):
         self.sx, self.x0, self.sy, self.y0 = sx, x0, sy, y0
         self.ncols, self.nrows = ncols, nrows
         self.score_x, self.score_y = score_x, score_y
+        self.exact = exact
+
+
+# ------------------------------------------------------------- exact pixel art
+
+CLEAR = -1                  # mapping value of a transparent cell
+MAX_EXACT_COLORS = 256
+
+
+def exact_grid(rgba):
+    """Clean pixel art read exactly: (grid, palette, mapping), or None.
+
+    The art must have only fully opaque or fully clear pixels, at most
+    MAX_EXACT_COLORS colors, and be made of even square blocks from the
+    top-left corner; the largest such block is one cell. Palette is ordered
+    by cell count (ties by color value); clear cells map to CLEAR."""
+    alpha = rgba[:, :, 3]
+    if not np.isin(alpha, (0, 255)).all():
+        return None
+    rgb = rgba[:, :, :3].astype(np.int64)
+    key = np.where(alpha == 255, (rgb[:, :, 0] << 16) | (rgb[:, :, 1] << 8) | rgb[:, :, 2], CLEAR)
+    H, W = key.shape
+    side = int(np.gcd(H, W))
+    for block in range(side, 0, -1):
+        if side % block:
+            continue
+        small = key[::block, ::block]
+        if (np.repeat(np.repeat(small, block, axis=0), block, axis=1) == key).all():
+            break
+    nrows, ncols = small.shape
+    if nrows < 2 or ncols < 2:
+        return None
+    opaque = small != CLEAR
+    colors, inverse, counts = np.unique(small[opaque], return_inverse=True, return_counts=True)
+    if not 0 < len(colors) <= MAX_EXACT_COLORS:
+        return None
+    order = np.argsort(-counts, kind="stable")
+    rank = np.empty(len(order), dtype=np.int64)
+    rank[order] = np.arange(len(order))
+    mapping = np.full(small.shape, CLEAR, dtype=np.int64)
+    mapping[opaque] = rank[inverse.ravel()]
+    colors = colors[order]
+    palette = np.stack([(colors >> 16) & 255, (colors >> 8) & 255, colors & 255], axis=1)
+    zero = np.zeros(1)
+    return Grid(float(block), 0.0, float(block), 0.0, ncols, nrows, zero, zero, exact=True), palette, mapping
+
+
+def recover(rgba, color_tol, min_scale, max_scale):
+    """Image (H, W, 4 uint8) -> (grid, cells, rmse, palette, mapping).
+
+    Clean pixel art is read exactly (exact_grid); anything else goes through
+    grid detection, rectification and palette quantization. cells holds each
+    cell's source color, for fidelity checks."""
+    exact = exact_grid(rgba)
+    if exact is not None:
+        grid, palette, mapping = exact
+        return grid, palette[np.maximum(mapping, 0)], 0.0, palette, mapping
+    img = rgba[:, :, :3].astype(np.float64)
+    grid = detect_grid(img, min_scale, max_scale)
+    cells, rmse = rectify(img, grid)
+    palette, mapping = build_palette(cells, color_tol)
+    return grid, cells, rmse, palette, mapping
+
+
+def load_rgba(source):
+    """Path or file object -> (H, W, 4) uint8 array."""
+    return np.asarray(Image.open(source).convert("RGBA"))
 
 
 # ------------------------------------------------------------- rectification
@@ -202,7 +274,7 @@ def despeckle(mapping, max_size, skip_idx=()):
     removed_regions = 0
     removed_cells = 0
     for c, cells_ in regions:
-        if c in skip_idx or len(cells_) >= max_size:
+        if c == CLEAR or c in skip_idx or len(cells_) >= max_size:
             continue
         # majority color among neighboring cells of other regions
         votes = {}
@@ -223,10 +295,13 @@ def despeckle(mapping, max_size, skip_idx=()):
 
 
 def detect_background(mapping):
-    """Dominant palette index along the border ring -> background candidate."""
-    H, W = mapping.shape
+    """Dominant palette index along the border ring -> background candidate.
+    Transparent cells never count as the background color."""
     ring = np.concatenate([mapping[0], mapping[-1], mapping[:, 0], mapping[:, -1]])
-    counts = np.bincount(ring.ravel())
+    colored = ring[ring != CLEAR]
+    if not len(colored):
+        return 0, 0.0
+    counts = np.bincount(colored)
     return int(counts.argmax()), counts.max() / len(ring)
 
 
@@ -288,9 +363,10 @@ def mesh(mapping, free_mask=None):
     """Greedy maximal-rectangle decomposition (merged per color region).
 
     Cells where free_mask is True are skipped entirely (e.g. the transparent
-    background region); interior cells of the same palette color that are not
-    part of that mask still produce rects."""
-    free = np.ones(mapping.shape, dtype=bool)
+    background region), as are transparent (CLEAR) cells; interior cells of
+    the same palette color that are not part of that mask still produce
+    rects."""
+    free = mapping != CLEAR
     if free_mask is not None:
         free &= ~np.asarray(free_mask, dtype=bool)
     rects = []
@@ -363,19 +439,26 @@ def colored_rgba(palette, mapping, bg_mask=None):
 
     bg_mask: boolean mask of cells to make fully transparent (the
     edge-connected background region). Interior cells of the same palette
-    color stay opaque."""
-    q = palette[mapping].astype(np.uint8)
+    color stay opaque. Transparent (CLEAR) cells are clear black."""
+    clear = mapping == CLEAR
+    q = palette[np.maximum(mapping, 0)].astype(np.uint8)
     h, w = mapping.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     rgba[:, :, :3] = q
     rgba[:, :, 3] = 255
+    rgba[clear] = 0
     if bg_mask is not None:
         rgba[np.asarray(bg_mask, dtype=bool), 3] = 0
     return rgba
 
 
+def palette_counts(palette, mapping):
+    """Cells per palette entry; transparent cells count for none."""
+    return np.bincount(mapping[mapping != CLEAR], minlength=len(palette))
+
+
 def write_palette(path_json, path_txt, palette, mapping, transparent_idx=None):
-    counts = np.bincount(mapping.ravel(), minlength=len(palette))
+    counts = palette_counts(palette, mapping)
     entries = [{"index": int(k), "hex": hexc(c), "cells": int(counts[k]),
                 "transparent": k == transparent_idx}
                for k, c in enumerate(palette)]
@@ -421,11 +504,9 @@ def apply_swaps(palette, swaps):
 
 def process(path, outdir, color_tol, min_scale, max_scale, swaps=(),
             keep_bg=False, despeckle_size=1):
-    img = np.asarray(Image.open(path).convert("RGB")).astype(np.float64)
-    H, W, _ = img.shape
-    grid = detect_grid(img, min_scale, max_scale)
-    cells, raw_rmse = rectify(img, grid)
-    palette, mapping = build_palette(cells, color_tol)
+    rgba = load_rgba(path)
+    H, W, _ = rgba.shape
+    grid, cells, raw_rmse, palette, mapping = recover(rgba, color_tol, min_scale, max_scale)
 
     # Background detection: dominant color on the border ring, then flood
     # fill from the border so only the edge-connected region is dropped.
@@ -451,9 +532,9 @@ def process(path, outdir, color_tol, min_scale, max_scale, swaps=(),
     regions = connected_regions(mapping)
 
     # Fidelity: how many cells ended up far from the raw dominant color.
-    final = palette[mapping]
+    final = palette[np.maximum(mapping, 0)]
     far = ((np.abs(final - cells) > max(24, color_tol)).any(axis=2)
-           & (True if bg_mask is None else ~bg_mask))
+           & (mapping != CLEAR) & (True if bg_mask is None else ~bg_mask))
     lossy = float(far.mean())
 
     base = os.path.splitext(os.path.basename(path))[0]
@@ -473,12 +554,16 @@ def process(path, outdir, color_tol, min_scale, max_scale, swaps=(),
     print(f"  source       : {W}x{H}")
     if swaps:
         print("  swaps        : " + (", ".join(f"{o}->{n}" for o, n in applied) or "(no targets found in palette)"))
-    print(f"  logical grid : {grid.ncols}x{grid.nrows} "
-          f"(cell {grid.sx:.2f}x{grid.sy:.2f} px, phase {grid.x0:.2f},{grid.y0:.2f})")
-    print(f"  alignment    : x median {np.median(grid.score_x):.2f}px / max "
-          f"{grid.score_x.max():.2f}px | y median {np.median(grid.score_y):.2f}px / max "
-          f"{grid.score_y.max():.2f}px (0 = edges exactly on grid)")
-    print(f"  raw RMSE     : {raw_rmse:.2f} (anti-aliasing/noise removed per cell)")
+    if grid.exact:
+        print(f"  logical grid : {grid.ncols}x{grid.nrows} "
+              f"(clean pixel art, {int(grid.sx)}px blocks, read exactly)")
+    else:
+        print(f"  logical grid : {grid.ncols}x{grid.nrows} "
+              f"(cell {grid.sx:.2f}x{grid.sy:.2f} px, phase {grid.x0:.2f},{grid.y0:.2f})")
+        print(f"  alignment    : x median {np.median(grid.score_x):.2f}px / max "
+              f"{grid.score_x.max():.2f}px | y median {np.median(grid.score_y):.2f}px / max "
+              f"{grid.score_y.max():.2f}px (0 = edges exactly on grid)")
+        print(f"  raw RMSE     : {raw_rmse:.2f} (anti-aliasing/noise removed per cell)")
     print(f"  palette      : {len(palette)} colors")
     if transparent_idx is not None:
         interior = int((mapping == transparent_idx).sum()) - int(bg_mask.sum())

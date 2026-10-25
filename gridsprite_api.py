@@ -92,7 +92,7 @@ def decode_image(blob):
     except Exception:
         raise ApiError("could not decode image body; send raw PNG/JPEG/WebP bytes")
     fmt = (im.format or "PNG").lower()
-    return np.asarray(im.convert("RGB")).astype(np.float64), fmt
+    return np.asarray(im.convert("RGBA")), fmt
 
 
 def sanitize_base(name):
@@ -111,7 +111,7 @@ def b64_png(img):
 
 
 def palette_document(palette, mapping, transparent_idx=None):
-    counts = np.bincount(mapping.ravel(), minlength=len(palette))
+    counts = px.palette_counts(palette, mapping)
     return {"grid": [int(mapping.shape[0]), int(mapping.shape[1])],
             "palette": [{"index": int(k), "hex": px.hexc(v),
                          "cells": int(counts[k]),
@@ -159,9 +159,7 @@ def render_scale_float(q):
 def run_pipeline(blob, color_tol, min_scale, max_scale):
     """Common front half: image bytes -> (grid, cells, rmse, palette, mapping)."""
     img, fmt = decode_image(blob)
-    grid = px.detect_grid(img, min_scale, max_scale)
-    cells, rmse = px.rectify(img, grid)
-    palette, mapping = px.build_palette(cells, color_tol)
+    grid, cells, rmse, palette, mapping = px.recover(img, color_tol, min_scale, max_scale)
     return img, fmt, grid, cells, rmse, palette, mapping
 
 
@@ -186,7 +184,7 @@ def background_info(mapping, palette, keep_bg):
 # ---------------------------------------------------------------- endpoints
 
 def grid_stats(grid, rmse):
-    return {"rows": int(grid.nrows), "cols": int(grid.ncols),
+    return {"rows": int(grid.nrows), "cols": int(grid.ncols), "exact": grid.exact,
             "cell_w": jf(grid.sx), "cell_h": jf(grid.sy),
             "phase_x": jf(grid.x0), "phase_y": jf(grid.y0),
             "align_x_median": jf(np.median(grid.score_x), 2),
@@ -203,7 +201,7 @@ def analyze_payload(blob, name, q):
     img, fmt, grid, _, rmse, palette, mapping = run_pipeline(
         blob, color_tol, min_scale, max_scale)
     bg, _, _ = background_info(mapping, palette, keep_bg=True)
-    counts = np.bincount(mapping.ravel(), minlength=len(palette))
+    counts = px.palette_counts(palette, mapping)
     return {
         "api": API_VERSION, "ok": True, "name": name, "format": fmt,
         "source": {"width": img.shape[1], "height": img.shape[0]},
@@ -255,9 +253,9 @@ def run_process(blob, name, q):
     svg = px.svg_string(palette, rects, grid.ncols, grid.nrows,
                         transparent_idx=transparent_idx)
 
-    final = palette[mapping]
+    final = palette[np.maximum(mapping, 0)]
     far = ((np.abs(final - cells) > max(24, color_tol)).any(axis=2)
-           & (True if remove_mask is None else ~remove_mask))
+           & (mapping != px.CLEAR) & (True if remove_mask is None else ~remove_mask))
     lossy = float(far.mean())
 
     # background hex may have been swapped; re-derive from the index
@@ -360,8 +358,9 @@ def run_render(body, q):
         raise ApiError("'mapping' must be a 2-D array of palette indices")
     if mapping.ndim != 2 or mapping.size == 0:
         raise ApiError("'mapping' must be a non-empty 2-D array")
-    if mapping.min() < 0 or mapping.max() >= len(palette):
-        raise ApiError("mapping contains palette indices outside the palette")
+    if mapping.min() < px.CLEAR or mapping.max() >= len(palette):
+        raise ApiError("mapping contains palette indices outside the palette "
+                       "(-1 marks a transparent cell)")
 
     transparent = data.get("transparent", None)
     if isinstance(transparent, bool) or \
@@ -438,7 +437,9 @@ def capabilities_payload():
                        "rectangles, and emits crisp SVG + PNG. Solid "
                        "backgrounds are made transparent with an "
                        "edge-connected flood fill (interior islands of the "
-                       "same color are kept).",
+                       "same color are kept). Clean pixel art (<=256 colors, "
+                       "binary alpha, even square blocks) is read exactly "
+                       "instead; its clear pixels map to -1.",
         "endpoints": {
             "GET /api/v1/capabilities": "this document",
             "POST /api/v1/analyze": {
@@ -482,6 +483,8 @@ def capabilities_payload():
             "GET /api/v1/download?f=name": "download a file written via save=1 (out/ only)",
             "GET /health": "liveness: {ok: true}",
         },
+        "transparent_cells": "mapping value -1 is a transparent cell, in any "
+                             "response and in /render input",
         "background_rule": "Background = dominant color on the border ring "
                            "(>=30% share). It is made transparent only where "
                            "4-connected to the border; interior islands of "

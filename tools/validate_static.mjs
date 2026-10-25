@@ -9,10 +9,34 @@ import { readFileSync, readdirSync } from "fs";
 import { basename, join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { tmpdir } from "os";
+import { inflateSync } from "zlib";
 
 const require_ = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
 const GS = require_(join(here, "..", "docs", "pipeline.js"));
+const encodePNG = require_(join(here, "..", "docs", "png.js"));
+
+/* minimal PNG decode (8-bit RGBA, filter 0 rows) to check encodePNG output */
+function decodePNG(png){
+  const buf = Buffer.from(png);
+  if (buf.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") return null;
+  let at = 8, w = 0, h = 0;
+  const idat = [];
+  while (at < buf.length){
+    const len = buf.readUInt32BE(at), type = buf.toString("latin1", at + 4, at + 8);
+    const data = buf.subarray(at + 8, at + 8 + len);
+    if (type === "IHDR"){ w = data.readUInt32BE(0); h = data.readUInt32BE(4); }
+    if (type === "IDAT") idat.push(data);
+    at += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat)), stride = w * 4;
+  const out = Buffer.alloc(stride * h);
+  for (let y = 0; y < h; y++){
+    if (raw[y * (stride + 1)] !== 0) return null;
+    raw.copy(out, y * stride, y * (stride + 1) + 1, (y + 1) * (stride + 1));
+  }
+  return { w, h, rgba: out };
+}
 const outdir = process.argv[2] || join(tmpdir(), "gridsprite-validate");
 
 let failures = 0, checks = 0;
@@ -96,11 +120,17 @@ for (const f of expFiles){
   check("svg", art.files[0].text === exp.svg, "svg text differs");
   check("palJson", art.files[3].text === exp.palJson, "palette.json text differs");
   check("palTxt", art.files[4].text === exp.palTxt, "palette.txt text differs");
-  check("png", Buffer.compare(Buffer.from(art.files[1].bytes),
+  check("png", Buffer.compare(Buffer.from(art.files[1].rgba),
                               bytesFromB64(exp.rgba)) === 0, "native rgba differs");
-  check("preview", Buffer.compare(Buffer.from(art.files[2].bytes),
+  check("preview", Buffer.compare(Buffer.from(art.files[2].rgba),
                                   bytesFromB64(exp.preview)) === 0,
         "preview rgba differs");
+  for (const pf of [art.files[1], art.files[2]]){
+    const dec = decodePNG(await encodePNG(pf.rgba, pf.width, pf.height));
+    check("encodePNG " + pf.name, dec && dec.w === pf.width && dec.h === pf.height &&
+          Buffer.compare(dec.rgba, Buffer.from(pf.rgba)) === 0,
+          "PNG does not decode back to the rgba buffer");
+  }
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed` +

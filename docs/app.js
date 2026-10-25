@@ -700,7 +700,9 @@ $("clearExports").onclick = clearExports;
 async function exportSession(sid){
   const s = sessions[sid];
   const art = GridSprite.exportArtifacts(s, Number($("desp").value));
-  const files = art.files;
+  const files = await Promise.all(art.files.map(async f => f.rgba
+    ? { name: f.name, type: f.type, bytes: await encodePNG(f.rgba, f.width, f.height) }
+    : f));
   const links = files.map(f => {
     const blob = bytesToBlob(f);
     return { name: f.name, type: f.type, blob, url: URL.createObjectURL(blob) };

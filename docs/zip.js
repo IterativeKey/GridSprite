@@ -91,5 +91,8 @@ function makeZip(entries){
 function u16(v){ return [v & 255, (v >>> 8) & 255]; }
 function u32(v){ return [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255]; }
 
-if (typeof window !== "undefined") window.makeZip = makeZip;
-if (typeof module === "object" && module.exports) module.exports = makeZip;
+if (typeof window !== "undefined"){ window.makeZip = makeZip; window.zipCRC32 = zipCRC32; }
+if (typeof module === "object" && module.exports){
+  module.exports = makeZip;
+  module.exports.crc32 = zipCRC32;
+}

@@ -46,7 +46,7 @@ To check that the JS port matches the Python pipeline byte-for-byte on every `sa
 
 ```bash
 .venv/bin/python tools/validate_static.py && node tools/validate_static.mjs
-# → 156/156 checks passed — equivalence verified
+# → 172/172 checks passed — equivalence verified
 ```
 
 ## License

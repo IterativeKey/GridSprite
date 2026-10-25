@@ -829,8 +829,10 @@ function exportArtifacts(state, despeckleSize){
     base,
     files: [
       { name: base + ".svg", type: "image/svg+xml", text: svg },
-      { name: base + ".png", type: "image/png", bytes: pngNative },
-      { name: base + ".rect.png", type: "image/png", bytes: preview },
+      { name: base + ".png", type: "image/png", rgba: pngNative,
+        width: ncols, height: nrows },
+      { name: base + ".rect.png", type: "image/png", rgba: preview,
+        width: state.sourceW, height: state.sourceH },
       { name: base + ".palette.json", type: "application/json", text: palJson },
       { name: base + ".palette.txt", type: "text/plain", text: palTxt },
     ],

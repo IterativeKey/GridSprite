@@ -437,6 +437,9 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
 #overlay, #gridlines { position: absolute; inset: 0; pointer-events: none; }
 .canvas-scroll.pan-ready canvas { cursor: grab !important; }
 .canvas-scroll.panning, .canvas-scroll.panning canvas { cursor: grabbing !important; }
+.viewbg { display: flex; align-items: center; gap: 6px; }
+.select.sm { padding: 3px 24px 3px 8px; font-size: 12.5px; border-radius: 7px; }
+.colorwell.sm { width: 30px; height: 24px; border-radius: 7px; }
 .zoombar { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .zoombar output {
   min-width: 40px; text-align: center;
@@ -703,6 +706,15 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
       <div class="stagebar">
         <div id="stats" class="stats"></div>
         <div class="spacer"></div>
+        <div class="viewbg" title="Background shown behind transparent cells (display only, exports stay transparent)">
+          <select class="select sm" id="viewBg" aria-label="Display background">
+            <option value="checker">Checker</option>
+            <option value="white">White</option>
+            <option value="black">Black</option>
+            <option value="custom">Custom</option>
+          </select>
+          <input type="color" class="colorwell sm" id="viewBgColor" value="#ff00ff" aria-label="Custom display background" hidden>
+        </div>
         <div class="zoombar">
           <button class="btn sm" id="zoomOut" type="button" title="Zoom out (−)" aria-label="Zoom out">−</button>
           <output id="zoomLabel">Fit</output>
@@ -1574,6 +1586,26 @@ $("gridchk").onchange = () => {
   try { localStorage.setItem("gs-grid", $("gridchk").checked ? "on" : "off"); } catch (e) {}
   if (current) renderGrid();
 };
+
+// display-only background behind transparent cells; exports stay transparent
+function applyViewBg(){
+  const mode = $("viewBg").value;
+  $("viewBgColor").hidden = mode !== "custom";
+  $("canvaswrap").style.background = mode === "white" ? "#fff" : mode === "black" ? "#000" :
+    mode === "custom" ? $("viewBgColor").value : "";
+}
+try {
+  $("viewBg").value = localStorage.getItem("gs-viewbg") || "checker";
+  $("viewBgColor").value = localStorage.getItem("gs-viewbg-color") || "#ff00ff";
+} catch (e) {}
+$("viewBg").onchange = $("viewBgColor").oninput = () => {
+  try {
+    localStorage.setItem("gs-viewbg", $("viewBg").value);
+    localStorage.setItem("gs-viewbg-color", $("viewBgColor").value);
+  } catch (e) {}
+  applyViewBg();
+};
+applyViewBg();
 
 $("bgchk").onchange = () => {
   if (!current) return;

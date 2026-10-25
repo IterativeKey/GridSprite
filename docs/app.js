@@ -798,6 +798,26 @@ $("gridchk").onchange = () => {
   if (current) renderGrid();
 };
 
+// display-only background behind transparent cells; exports stay transparent
+function applyViewBg(){
+  const mode = $("viewBg").value;
+  $("viewBgColor").hidden = mode !== "custom";
+  $("canvaswrap").style.background = mode === "white" ? "#fff" : mode === "black" ? "#000" :
+    mode === "custom" ? $("viewBgColor").value : "";
+}
+try {
+  $("viewBg").value = localStorage.getItem("gs-viewbg") || "checker";
+  $("viewBgColor").value = localStorage.getItem("gs-viewbg-color") || "#ff00ff";
+} catch (e) {}
+$("viewBg").onchange = $("viewBgColor").oninput = () => {
+  try {
+    localStorage.setItem("gs-viewbg", $("viewBg").value);
+    localStorage.setItem("gs-viewbg-color", $("viewBgColor").value);
+  } catch (e) {}
+  applyViewBg();
+};
+applyViewBg();
+
 $("bgchk").onchange = () => {
   if (!current) return;
   sessions[current].transparentOn = $("bgchk").checked;

@@ -243,7 +243,12 @@ canvas { display: block; image-rendering: pixelated; touch-action: none; }
   border-radius: 9px;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  color: var(--muted); font-size: 12px; min-height: 35px;
+  color: var(--muted); font-size: 12px;
+  /* fixed two-line height: text appearing, wrapping or clearing must not
+     resize the canvas area, or fit-to-view rescales the image */
+  flex-shrink: 0; height: calc(2lh + 18px);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .empty {

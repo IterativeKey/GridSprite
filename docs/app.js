@@ -11,6 +11,7 @@ let brushColor = null;            // palette index used by brush and fill
 let undoStack = [];
 let dragging = false;
 let lastPaint = null;             // last cell a brush or erase drag painted
+let pickReturn = "brush";          // mode an Alt-pick of a color returns to from Erase
 let marquee = null;               // {y0, x0, base} while dragging a rectangle selection
 let pan = null;                   // pointer and scroll origin while panning
 let spaceHeld = false;
@@ -34,7 +35,7 @@ const modeTips = {
   select: "<b>Select</b> — drag a rectangle of cells (Shift adds to the selection), then click a color, a preset or <b>Apply to affected</b> to fill it. <b>Make transparent</b> or Delete clears it, Esc deselects.",
   brush:  "<b>Brush</b> — pick a color (palette chip, preset row or the picker), then drag on the canvas to paint. The cell under the pointer shimmers. Alt-click picks a color from the canvas.",
   fill:   "<b>Fill</b> — pick a color, then click a cluster of same-colored or transparent cells (4- or 8-connected) to fill it. The shimmer shows what would change. Alt-click picks a color.",
-  erase:  "<b>Erase</b> — drag on the canvas to make cells transparent.",
+  erase:  "<b>Erase</b> — drag on the canvas to make cells transparent. Alt-click a colored cell to pick it and go back to painting.",
   pick:   "<b>Pick</b> — click a cell to take its color for the brush; picking a transparent cell switches to Erase.",
 };
 
@@ -515,12 +516,14 @@ function pickAt(y, x){
   const s = sessions[current];
   const v = s.mapping[y][x];
   if (v === CLEAR_CELL){
+    if (mode !== "erase") pickReturn = mode === "fill" ? "fill" : "brush";
     setMode("erase");
     toast("Picked transparent → Erase");
     return;
   }
   brushColor = v;
   if (mode === "pick") setMode("brush");
+  else if (mode === "erase") setMode(pickReturn);
   toast(`Picked ${s.palette[v]}`);
 }
 
@@ -622,7 +625,7 @@ c.addEventListener("pointerdown", ev => {
     renderCanvas();
     const s = sessions[current];
     $("tipbar").textContent = `Selected ${selection.size} cells (${colorName(selColor)}) — click a palette color, a preset or Apply to recolor them; click elsewhere for a different region.`;
-  } else if (mode === "pick" || (ev.altKey && (mode === "brush" || mode === "fill"))){
+  } else if (mode === "pick" || (ev.altKey && (mode === "brush" || mode === "fill" || mode === "erase"))){
     pickAt(y, x);
   } else if (mode === "fill"){
     if (brushColor === null){ toast("Pick a fill color from the palette first"); return; }
